@@ -1,0 +1,11 @@
+#!/bin/bash
+
+POLYSEMY_OUTPUT_DIR="MedGemma/Layer52/polysemy_analysis"
+
+python jaccard_10.py \
+    --topk_csv "$POLYSEMY_OUTPUT_DIR/topk_latents.csv" \
+    --ner_jsonl "MedGemma/Layer52/polysemy_analysis/ner_spans.jsonl" \
+    --lexicon_csv "$POLYSEMY_OUTPUT_DIR/polysemy_lexicon.csv" \
+    --output_csv "$POLYSEMY_OUTPUT_DIR/metrics/jaccard_10.csv"
+
+echo "Jaccard 10 final analysis complete."
