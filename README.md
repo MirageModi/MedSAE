@@ -22,6 +22,7 @@
   - [2. SAE Training](#2-sae-training)
   - [3. Polysemy Analysis](#3-polysemy-analysis)
 - [Analysis Tools](#analysis-tools)
+- [Oncology Robustness Experiments](#oncology-robustness-experiments)
 - [Configuration](#configuration)
 - [Outputs](#outputs)
 - [Citation](#citation)
@@ -55,6 +56,7 @@ MedSAE trains sparse autoencoders on LLM hidden states to discover interpretable
 - 🔄 **Character-level alignment** between NER spans and LLM token positions
 - 📈 **Probe-based evaluation** with AUROC/AP filtering for latent quality assessment
 - 🧪 **Mixed-effects modeling** for statistical analysis (R integration)
+- 🧬 **Oncology robustness testing** with UMLS concept ablation studies across multiple LLMs
 
 ---
 
@@ -76,6 +78,10 @@ MedSAE/
 │   ├── run_ablation_delta_ce.py     # Ablation cross-entropy analysis
 │   └── run_mixed_effects.R          # Mixed-effects statistical models
 │
+├── Oncology/                         # LLM robustness testing experiments
+│   ├── LLM_generate.py             # UMLS concept removal experiments
+│   └── gpt5_thinking_model.py      # GPT-5 wrapper using OpenAI Responses API
+│
 └── analysis/                        # Post-hoc analysis scripts
     ├── jaccard_10.py                # Top-10 Jaccard similarity analysis
     ├── jaccard_control.py           # Monosemantic baseline comparisons
@@ -83,6 +89,8 @@ MedSAE/
     ├── run_jacc10.sh                # Jaccard analysis runner
     └── control_jaccard.sh           # Control experiment runner
 ```
+
+**Note:** A SLURM batch script example (`run_removals_optimized.sh`) is documented in the usage section but is not included in the repository.
 
 ---
 
@@ -108,6 +116,15 @@ bitsandbytes            # Optional: 8-bit Adam optimizer
 ```r
 install.packages(c("lme4", "lmerTest", "broom.mixed", "dplyr"))
 ```
+
+### Additional Dependencies (for Oncology module)
+
+```bash
+# OpenAI Python client (for GPT-5 support)
+pip install openai
+```
+
+**Note:** GPT-5 access requires an OpenAI API key. Set `OPENAI_API_KEY` environment variable or pass `--openai_api_key` when running experiments.
 
 ### Hardware Requirements
 
@@ -305,6 +322,86 @@ python analysis/reranking_retrieval.py \
     --lexicon_csv polysemy_analysis/polysemy_lexicon.csv \
     --output_dir results/retrieval/
 ```
+
+---
+
+## Oncology Robustness Experiments
+
+The `Oncology/` module contains an experimental framework for testing LLM robustness in clinical decision-making. This module performs ablation studies by systematically removing medical concepts from clinical notes and evaluating how different models respond to incomplete information.
+
+### Purpose and Methodology
+
+This module tests model robustness through controlled ablation experiments:
+
+- **Medical Concept Removal**: Systematically removes medical terms from clinical notes, replacing them with `[MISSING INFO]` placeholders
+- **Multi-Model Comparison**: Evaluates responses across OpenBioLLM, MedGemma, and GPT-5 to assess robustness to missing information
+- **Clinical Decision-Making**: Focuses on oncology-specific cases requiring staging, treatment planning, and management recommendations
+- **Self-Consistency**: Uses majority voting across multiple generations (n=5) for HuggingFace models to improve reliability
+
+### Usage
+
+#### Direct Python Execution (Primary Method)
+
+For HuggingFace models (OpenBioLLM, MedGemma):
+
+```bash
+python Oncology/LLM_generate.py \
+    --model=medgemma \
+    --prompt=NSCLC-initiateTreatment \
+    --batch_size=1
+```
+
+For GPT-5 models:
+
+```bash
+python Oncology/LLM_generate.py \
+    --model=gpt-5 \
+    --prompt=UC \
+    --reasoning_effort=medium \
+    --verbosity=high \
+    --max_output_tokens=16384 \
+    --openai_api_key=$OPENAI_API_KEY
+```
+
+**Model-specific parameters:**
+
+| Parameter | Models | Options | Description |
+|-----------|--------|---------|-------------|
+| `TASK_TAG` | All | directedTBD/fullAPTBD/fullAP_TBD/CoT | Task format (set in code, default: "directedTBD") |
+| `--reasoning_effort` | GPT-5 only | minimal/low/medium/high | Controls reasoning depth for GPT-5 thinking model |
+| `--verbosity` | GPT-5 only | low/medium/high | Controls output verbosity level |
+| `--max_output_tokens` | GPT-5 only | integer (default: 16384) | Maximum output tokens for GPT-5 |
+| `--batch_size` | OpenBioLLM, MedGemma | integer (default: 1) | Batch size for HuggingFace models (ignored for GPT-5) |
+
+**Supported prompt types:**
+
+- `UC`: Urethral Carcinoma case
+- `NSCLC-initiateTreatment`: Non-small cell lung cancer treatment initiation
+- `NSCLC-RoutineFollowup`: Non-small cell lung cancer routine follow-up
+
+### Output Structure
+
+Results are saved in `data/{PROMPT}/{MODEL}-{TASK_TAG}/`:
+
+```
+data/
+└── {PROMPT}/
+    └── {MODEL}-{TASK_TAG}/
+        ├── routine_{PROMPT}_{MODEL}_{description}_2048tokens.txt  # Individual responses per removal
+        ├── routine_{PROMPT}_{MODEL}_all_umls_removals_summary.txt  # Summary of all responses
+        └── routine_{PROMPT}_{MODEL}_umls_removals_results.json     # JSON results with metadata
+```
+
+Each individual response file contains:
+- Terms removed for that experiment
+- Description of the removal combination
+- Self-consistency parameters (for HuggingFace models) or GPT-5 config (for GPT-5)
+- Full model response
+
+The JSON results file includes:
+- Complete list of UMLS concepts tested
+- All responses with metadata
+- Model configuration (self-consistency params or GPT-5 reasoning settings)
 
 ---
 
