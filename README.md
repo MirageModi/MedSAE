@@ -56,7 +56,7 @@ MedSAE trains sparse autoencoders on LLM hidden states to discover interpretable
 - 🔄 **Character-level alignment** between NER spans and LLM token positions
 - 📈 **Probe-based evaluation** with AUROC/AP filtering for latent quality assessment
 - 🧪 **Mixed-effects modeling** for statistical analysis (R integration)
-- 🧬 **Oncology robustness testing** with UMLS concept ablation studies across multiple LLMs
+- 🧬 **Oncology robustness testing** with medical concept ablation studies across multiple LLMs
 
 ---
 
@@ -79,7 +79,7 @@ MedSAE/
 │   └── run_mixed_effects.R          # Mixed-effects statistical models
 │
 ├── Oncology/                         # LLM robustness testing experiments
-│   ├── LLM_generate.py             # UMLS concept removal experiments
+│   ├── LLM_generate.py             # Medical concept removal experiments
 │   └── gpt5_thinking_model.py      # GPT-5 wrapper using OpenAI Responses API
 │
 └── analysis/                        # Post-hoc analysis scripts
@@ -399,7 +399,7 @@ Each individual response file contains:
 - Full model response
 
 The JSON results file includes:
-- Complete list of UMLS concepts tested
+- Complete list of Medical concepts tested
 - All responses with metadata
 - Model configuration (self-consistency params or GPT-5 reasoning settings)
 
