@@ -515,18 +515,20 @@ block (cardiac vs neurological):        19.6% (n=234,67)
 
 ---
 
-<!-- ## Citation
+## Citation
 
 If you use MedSAE in your research, please cite:
 
 ```bibtex
-@article{,
-  title={},
-  author={},
-  journal={},
-  year={}
+@article{medsae2026,
+  title={Understanding Clinical Reasoning Variability in Medical Large Language Models: A Mechanistic Interpretability Study},
+  author={Modi, Mirage and Krull, Jordan E. and Johnson, Donte and Wang, Xiaoying and Gauntner, Timothy D. and Li, Mingjia and Cheng, Hao and Ma, Anjun and Zhang, Ping and Stover, Daniel G. and Li, Zihai and Ma, Qin},
+  journal={medRxiv},
+  year={2026},
+  doi={10.64898/2026.01.26.26344845},
+  url={https://www.medrxiv.org/content/10.64898/2026.01.26.26344845v2}
 }
-``` -->
+```
 
 ---
 
