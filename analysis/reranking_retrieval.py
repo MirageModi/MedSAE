@@ -1,12 +1,6 @@
 #!/usr/bin/env python3
 """
 run_final_paper_experiments.py
-
-Refined experiments for publication:
-1. Fine-grained k sweep (k=5,10,15,20,25,30,40,50)
-2. Weighted combination with statistical significance
-3. Balanced evaluation with confidence intervals
-4. Publication-ready visualizations
 """
 
 import argparse
@@ -131,7 +125,7 @@ def resolve_sense(ner_label, valid_senses):
 
 
 # =============================================================================
-# EXPERIMENT A: Fine-Grained K Sweep
+# Fine-Grained K Sweep
 # =============================================================================
 def run_fine_grained_k_sweep(df_processed, word_to_senses, n_anchor=10):
     """Fine-grained k sweep around the optimal range."""
@@ -288,32 +282,16 @@ def main():
     
     print(f"Final processed rows: {len(df)}")
     
-    # Debug: Show sense distribution per word
-    print("\n" + "="*70)
-    print("DEBUG: SENSE DISTRIBUTION PER WORD")
-    print("="*70)
-    for word in TARGET_WORDS:
-        word_df = df[df['lemma_lower'] == word]
-        if len(word_df) > 0:
-            sense_counts = word_df['sense'].value_counts()
-            valid_senses = word_to_senses.get(word, set())
-            print(f"{word}: {len(word_df)} total, senses={dict(sense_counts)}, valid_senses={valid_senses}")
-        else:
-            print(f"{word}: 0 samples")
-    
-    # Run experiments
     exp_a_detail, exp_a_summary = run_fine_grained_k_sweep(df, word_to_senses, args.n_anchor)
     exp_a_detail.to_csv(f"{args.output_dir}/exp_a_k_sweep_detail.csv", index=False)
     exp_a_summary.to_csv(f"{args.output_dir}/exp_a_k_sweep_summary.csv", index=False)
     
-    # Generate publication-ready figure
     try:
         import matplotlib.pyplot as plt
         import matplotlib.patches as mpatches
         
         fig, axes = plt.subplots(1, 1, figsize=(8, 3))
         
-        # Plot A: K sweep with error bars
         ax1 = axes[0]
         k_vals = exp_a_summary['k'].values
         means = exp_a_summary['delta_P@1_mean'].values
@@ -333,8 +311,6 @@ def main():
         ax1.set_ylabel('ΔP@1 (Re-rank − Baseline) %', fontsize=12)
         ax1.set_title('A. Re-ranking Improvement\nby Candidate Pool Size', fontsize=14)
         ax1.grid(True, alpha=0.3)
-        
-        # Plot B: Weighted combination
         
         plt.tight_layout()
         plt.savefig(f"{args.output_dir}/figure_retrieval_experiments.png", dpi=300, bbox_inches='tight')
