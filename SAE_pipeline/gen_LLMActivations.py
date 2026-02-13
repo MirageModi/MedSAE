@@ -524,12 +524,19 @@ def main():
             print(f"[Warn] Could not convert indices to numpy: {e}")
 
     def get_local_model_path(model_id: str) -> str:
-        """Map HuggingFace model IDs to local paths if models are available locally."""
-        model_path_map = {
-            "google/medgemma-27b-text-it": "/bmbl_data/mirage/MedGemma",
-            "aaditya/OpenBioLLM-Llama3-70B": "/bmbl_data/mirage/OpenBioLLM",
+        """Map HuggingFace model IDs to local paths if models are available locally.
+        
+        Checks environment variables first (e.g., MEDGEMMA_PATH, OPENBIOLLM_PATH),
+        then falls back to model_id for HuggingFace Hub download.
+        """
+        env_map = {
+            "google/medgemma-27b-text-it": os.environ.get("MEDGEMMA_PATH"),
+            "aaditya/OpenBioLLM-Llama3-70B": os.environ.get("OPENBIOLLM_PATH"),
         }
-        return model_path_map.get(model_id, model_id)
+        local_path = env_map.get(model_id)
+        if local_path and os.path.exists(local_path):
+            return local_path
+        return model_id
     
     local_model_path = get_local_model_path(args.model_id)
     if rank == 0:

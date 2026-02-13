@@ -17,14 +17,20 @@ def load_model_and_sae(model_id: str, ckpt_path: str, layer_index: int,
     from transformers import AutoModelForCausalLM, AutoTokenizer
     from sae_viewer_comparisons_fixed import prepare_hf_with_reservation, str2dtype
     
-    # Map model IDs to local paths if available
     def get_local_model_path(model_id: str) -> str:
-        """Map HuggingFace model IDs to local paths if models are available locally."""
-        model_path_map = {
-            "google/medgemma-27b-text-it": "/bmbl_data/mirage/MedGemma",
-            "aaditya/OpenBioLLM-Llama3-70B": "/bmbl_data/mirage/OpenBioLLM",
+        """Map HuggingFace model IDs to local paths if models are available locally.
+        
+        Checks environment variables first (e.g., MEDGEMMA_PATH, OPENBIOLLM_PATH),
+        then falls back to model_id for HuggingFace Hub download.
+        """
+        env_map = {
+            "google/medgemma-27b-text-it": os.environ.get("MEDGEMMA_PATH"),
+            "aaditya/OpenBioLLM-Llama3-70B": os.environ.get("OPENBIOLLM_PATH"),
         }
-        return model_path_map.get(model_id, model_id)
+        local_path = env_map.get(model_id)
+        if local_path and os.path.exists(local_path):
+            return local_path
+        return model_id
     
     local_model_path = get_local_model_path(model_id)
     print(f"[Info] Loading model from local path: {local_model_path} (from {model_id})")
