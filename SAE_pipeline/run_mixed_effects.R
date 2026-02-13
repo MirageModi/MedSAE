@@ -18,11 +18,6 @@ output_dir <- args[2]
 
 dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
 
-# ==============================================================================
-# Helper Functions
-# ==============================================================================
-
-# Clamp values to (epsilon, 1-epsilon) for Beta/Logit logic
 clamp_beta <- function(x, eps = 1e-5) {
     pmin(pmax(x, eps), 1 - eps)
 }
@@ -33,34 +28,28 @@ has_variance <- function(df, col) {
     return(length(unique(df[[col]])) > 1)
 }
 
-# Filter data to require at least min_samples per context category
 filter_by_context_sample_size <- function(df, context_col = "context", min_samples = 3, model_name = "Model") {
     if (!context_col %in% names(df)) {
         cat(paste0("  [INFO] No '", context_col, "' column found, skipping sample size filter.\n"))
         return(df)
     }
     
-    # Count samples per context - use n_occurrences if available, otherwise count rows
     if ("n_occurrences" %in% names(df)) {
-        # Sum total occurrences per context
         context_counts <- df %>%
             group_by(.data[[context_col]]) %>%
             summarise(n = sum(n_occurrences, na.rm = TRUE), .groups = "drop")
         count_type <- "occurrences"
     } else {
-        # Count rows per context
         context_counts <- df %>%
             group_by(.data[[context_col]]) %>%
             summarise(n = n(), .groups = "drop")
         count_type <- "samples"
     }
     
-    # Identify contexts with sufficient samples
     valid_contexts <- context_counts %>%
         filter(n >= min_samples) %>%
         pull(.data[[context_col]])
     
-    # Report filtering
     filtered_contexts <- context_counts %>%
         filter(n < min_samples)
     
@@ -82,21 +71,18 @@ filter_by_context_sample_size <- function(df, context_col = "context", min_sampl
 }
 
 build_formula <- function(df, target_var, use_random = TRUE) {
-    # Fixed effects
     fixed <- c()
     if (has_variance(df, "polysemy")) fixed <- c(fixed, "polysemy")
     if (has_variance(df, "context")) fixed <- c(fixed, "context")
     if (has_variance(df, "layer")) fixed <- c(fixed, "layer")
     if (has_variance(df, "model")) fixed <- c(fixed, "model")
     
-    # Construct RHS
     if (length(fixed) == 0) {
         rhs <- "1"
     } else {
         rhs <- paste(fixed, collapse = " + ")
     }
     
-    # Random effects (Only for Mixed Models)
     if (use_random) {
         rhs <- paste(rhs, "+ (1 | lemma)")
         if (has_variance(df, "doc_id")) rhs <- paste(rhs, "+ (1 | doc_id)")
@@ -160,7 +146,6 @@ fit_robust <- function(df, target_var, model_type = "beta", name = "Model") {
     
     if (!is.null(try_base)) {
         cat("  [SUCCESS] Fallback model converged.\n")
-        # Normalize coefficient output format
         coefs <- summary(try_base)$coefficients
         return(coefs)
     }
@@ -168,13 +153,7 @@ fit_robust <- function(df, target_var, model_type = "beta", name = "Model") {
     return(NULL)
 }
 
-# ==============================================================================
-# Main Execution
-# ==============================================================================
-
-# --- Load & Preprocess ---
-
-# 1. Entropy
+path_ent <- file.path(input_dir, "entropy_per_sense.csv")
 path_ent <- file.path(input_dir, "entropy_per_sense.csv")
 if (file.exists(path_ent)) {
     df_entropy <- read.csv(path_ent, stringsAsFactors = FALSE)
@@ -200,7 +179,6 @@ if (file.exists(path_ent)) {
     cat("Missing entropy_per_sense.csv\n")
 }
 
-# 2. Jaccard
 path_jac <- file.path(input_dir, "jaccard_cross_sense.csv")
 if (file.exists(path_jac)) {
     df_jaccard <- read.csv(path_jac, stringsAsFactors = FALSE)
@@ -218,7 +196,6 @@ if (file.exists(path_jac)) {
     cat("Missing jaccard_cross_sense.csv\n")
 }
 
-# 3. Delta CE
 path_dce <- file.path(input_dir, "ablation_delta_ce.csv")
 if (file.exists(path_dce)) {
     df_delta_ce <- read.csv(path_dce, stringsAsFactors = FALSE)
@@ -244,7 +221,6 @@ if (file.exists(path_dce)) {
     cat("Missing ablation_delta_ce.csv\n")
 }
 
-# --- FDR Correction ---
 cat("\n--- Applying FDR Correction ---\n")
 all_pvals <- c()
 all_terms <- c()

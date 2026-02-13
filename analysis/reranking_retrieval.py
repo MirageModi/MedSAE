@@ -1,7 +1,4 @@
 #!/usr/bin/env python3
-"""
-run_final_paper_experiments.py
-"""
 
 import argparse
 import pandas as pd
@@ -123,10 +120,6 @@ def resolve_sense(ner_label, valid_senses):
                 return sense
     return None
 
-
-# =============================================================================
-# Fine-Grained K Sweep
-# =============================================================================
 def run_fine_grained_k_sweep(df_processed, word_to_senses, n_anchor=10):
     """Fine-grained k sweep around the optimal range."""
     print("\n" + "="*70)
@@ -164,17 +157,15 @@ def run_fine_grained_k_sweep(df_processed, word_to_senses, n_anchor=10):
                     if cand_idx == query_idx:
                         continue
                     cand_row = word_df.loc[cand_idx]
-                    candidates.append({
-                        'sense': cand_row['sense'],
-                        'full_sim': sparse_cosine_similarity(query_row['full_vec'], cand_row['full_vec']),
-                        'semantic_sim': sparse_cosine_similarity(query_row['semantic_vec'], cand_row['semantic_vec'])
-                    })
+                candidates.append({
+                    'sense': cand_row['sense'],
+                    'full_sim': sparse_cosine_similarity(query_row['full_vec'], cand_row['full_vec']),
+                    'semantic_sim': sparse_cosine_similarity(query_row['semantic_vec'], cand_row['semantic_vec'])
+                })
                 
-                # Full method
                 candidates_full = sorted(candidates, key=lambda x: x['full_sim'], reverse=True)
                 metrics_full = compute_retrieval_metrics(query_sense, [c['sense'] for c in candidates_full])
                 
-                # Re-rank
                 stage1 = sorted(candidates, key=lambda x: x['full_sim'], reverse=True)[:rerank_k]
                 reranked = sorted(stage1, key=lambda x: x['semantic_sim'], reverse=True)
                 remaining = [c for c in candidates_full if c not in stage1]
@@ -190,7 +181,6 @@ def run_fine_grained_k_sweep(df_processed, word_to_senses, n_anchor=10):
     
     per_query_df = pd.DataFrame(per_query_results)
     
-    # Aggregate with confidence intervals
     print("\n" + "-"*70)
     print("FINE-GRAINED K SWEEP RESULTS")
     print("-"*70)
@@ -210,7 +200,6 @@ def run_fine_grained_k_sweep(df_processed, word_to_senses, n_anchor=10):
         
         mean_ap = np.mean(delta_ap) * 100
         
-        # Paired t-test
         t_stat, p_value = stats.ttest_rel(k_df['rerank_P@1'], k_df['full_P@1'])
         
         sig = "***" if p_value < 0.001 else "**" if p_value < 0.01 else "*" if p_value < 0.05 else ""
@@ -224,15 +213,11 @@ def run_fine_grained_k_sweep(df_processed, word_to_senses, n_anchor=10):
     
     summary_df = pd.DataFrame(summary_rows)
     
-    # Find optimal k
     optimal_k = summary_df.loc[summary_df['delta_P@1_mean'].idxmax(), 'k']
     print(f"\nOptimal k for P@1 improvement: k={optimal_k}")
     
     return per_query_df, summary_df
 
-# =============================================================================
-# MAIN
-# =============================================================================
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--topk_csv", required=True)
@@ -244,7 +229,6 @@ def main():
     
     os.makedirs(args.output_dir, exist_ok=True)
     
-    # Load data
     print("Loading data...")
     df = pd.read_csv(args.topk_csv, low_memory=False)
     df['lemma_lower'] = df['lemma'].str.lower()
@@ -302,7 +286,6 @@ def main():
         ax1.axhline(0, color='gray', linestyle='--', alpha=0.5)
         ax1.fill_between(k_vals, means-cis, means+cis, alpha=0.2, color='#d62728')
         
-        # Mark optimal
         optimal_idx = np.argmax(means)
         ax1.scatter([k_vals[optimal_idx]], [means[optimal_idx]], s=200, color='gold', 
                    edgecolor='black', zorder=5, marker='*')

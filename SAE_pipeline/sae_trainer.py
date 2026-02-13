@@ -34,8 +34,8 @@ try:
 except Exception:
     bnb = None
 
-CKPT_EVERY = 50  # or make it a CLI flag
-# ==================== Utils ====================
+CKPT_EVERY = 50
+
 def set_seed(seed: int = 42):
     random.seed(seed); torch.manual_seed(seed); torch.cuda.manual_seed_all(seed)
 
@@ -51,7 +51,6 @@ def str2dtype(s: str) -> torch.dtype:
     if s in ("float16","fp16"):  return torch.float16
     return torch.float32
 
-# ==================== Config (preserved flags/defaults) ====================
 @dataclass
 class TrainConfig:
     activations_dir: str = "activations"
@@ -81,49 +80,16 @@ class TrainConfig:
     sae_fsdp_devices: str = "0,1,2,3"
     dtype: str = "bfloat16"
 
-# ==================== FSDP ====================
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp import MixedPrecision, ShardingStrategy, StateDictType, FullStateDictConfig, FullOptimStateDictConfig, CPUOffload
 
 @contextmanager
 def fsdp_ctx(m):
     if isinstance(m, FSDP):
-        # Materialize original-shaped params for math ops like einsum
         with FSDP.summon_full_params(m, writeback=False, recurse=True):
             yield
     else:
         yield
-
-# def _parse_devices(devs: str):
-#     return [int(x) for x in devs.split(",") if x.strip() != ""]
-
-# def init_sae_distributed(cfg):
-#     import datetime
-#     dev_ids = [int(x) for x in cfg.sae_fsdp_devices.split(",") if x.strip()]
-
-#     local_rank = int(os.environ.get("LOCAL_RANK", 0))
-#     rank       = int(os.environ.get("RANK", 0))
-#     world_size = int(os.environ.get("WORLD_SIZE", 1))
-
-#     # map local_rank -> actual GPU id
-#     device_id = dev_ids[local_rank] if cfg.sae_fsdp else dev_ids[0]
-#     torch.cuda.set_device(device_id)
-#     sae_device = torch.device(f"cuda:{device_id}")
-
-#     if cfg.sae_fsdp and not dist.is_initialized():
-#         dist.init_process_group(
-#             backend="nccl",
-#             init_method="env://",
-#             timeout=datetime.timedelta(hours=4),
-#             # no device_id arg here
-#         )
-
-#     # sanity
-#     assert torch.cuda.current_device() == sae_device.index
-
-#     return dict(world=(len(dev_ids) if cfg.sae_fsdp else 1),
-#                 rank=rank, local_rank=local_rank,
-#                 sae_device=sae_device, sae_dev_ids=dev_ids)
 
 def _parse_devices(devs: str):
     return [int(x) for x in devs.split(",") if x.strip()]
@@ -141,52 +107,30 @@ def init_sae_distributed(cfg):
     dev_ids = _parse_devices(cfg.sae_fsdp_devices) or [0]
     device_id = dev_ids[local_rank] if cfg.sae_fsdp else dev_ids[0]
 
-    # Bind CUDA device BEFORE init_process_group
     torch.cuda.set_device(device_id)
     sae_device = torch.device(f"cuda:{device_id}")
 
     if cfg.sae_fsdp and not dist.is_initialized():
         try:
-            # Newer PyTorch: accepts torch.device
             dist.init_process_group(
                 backend="nccl",
                 init_method="env://",
                 timeout=datetime.timedelta(hours=4),
-                device_id=sae_device,   # <-- torch.device, NOT int
+                device_id=sae_device,
             )
         except TypeError:
-            # Older PyTorch: no device_id kwarg
             dist.init_process_group(
                 backend="nccl",
                 init_method="env://",
                 timeout=datetime.timedelta(hours=4),
             )
 
-    # Sanity check
     assert torch.cuda.current_device() == sae_device.index
 
     return dict(world=(len(dev_ids) if cfg.sae_fsdp else 1),
                 rank=rank, local_rank=local_rank,
                 sae_device=sae_device, sae_dev_ids=dev_ids)
 
-# def init_sae_distributed(cfg: TrainConfig) -> Dict[str, Any]:
-#     # Preserve your devices string semantics
-#     if not cfg.sae_fsdp:
-#         dev = f"cuda:{cfg.sae_fsdp_devices.split(',')[0]}"
-#         torch.cuda.set_device(torch.device(dev))
-#         return dict(world=1, rank=0, local_rank=0, sae_device=torch.device(dev), sae_dev_ids=[int(cfg.sae_fsdp_devices.split(',')[0])])
-#     dev_ids = _parse_devices(cfg.sae_fsdp_devices)
-#     world = len(dev_ids)
-#     rank = int(os.environ.get("RANK","0"))
-#     local_rank = int(os.environ.get("LOCAL_RANK","0"))
-#     assert local_rank < world, f"LOCAL_RANK {local_rank} >= world {world} (devices {dev_ids})"
-#     sae_device = torch.device(f"cuda:{dev_ids[local_rank]}")
-#     torch.cuda.set_device(sae_device)
-#     if not dist.is_initialized():
-#         dist.init_process_group(backend="nccl", timeout=datetime.timedelta(hours=4), device_id=sae_device.index)
-#     return dict(world=world, rank=rank, local_rank=local_rank, sae_device=sae_device, sae_dev_ids=dev_ids)
-
-# ==================== SAE ====================
 class TopK(nn.Module):
     def __init__(self, k: int, relu_after: bool = True):
         super().__init__()
@@ -219,7 +163,6 @@ class SparseAutoencoder(nn.Module):
         self.register_buffer("feature_scale", torch.ones(n_latents, dtype=torch.float32))
         self.register_buffer("feature_hits", torch.zeros(n_latents, dtype=torch.long))
 
-    # ---- RESTORED API ----
     def encode_preact(self, x: torch.Tensor) -> torch.Tensor:
         """Linear encoder pre-activations: [B,T,N]"""
         return torch.einsum("btd,nd->btn", x, self.W_enc) + self.b_enc
@@ -334,19 +277,15 @@ class SparseAutoencoder(nn.Module):
         return (z / scale.view(1, 1, -1)).clamp(0, 1)
 
     def forward(self, x: torch.Tensor, k_aux: int = 0, mask: torch.Tensor = None):
-        # Main path
-        z, pre = self.encode(x)                 # uses self.W_enc (FSDP-managed)
-        x_hat  = self.decode(z)                 # uses self.W_dec (FSDP-managed)
+        z, pre = self.encode(x)
+        x_hat  = self.decode(z)
 
         aux_loss = None
         if self.training and k_aux and k_aux > self.k:
-            # Residual (detach so aux only trains encoder)
             residual = (x - x_hat).detach()
 
-            # Project residual into latent space
-            pre_res = self.encode_preact(residual)  # uses self.W_enc
+            pre_res = self.encode_preact(residual)
 
-            # Select top-k_aux latents for residual
             k_aux_eff = min(k_aux, pre_res.shape[-1])
             with torch.no_grad():
                 _, idx_aux = torch.topk(pre_res, k=k_aux_eff, dim=-1)
@@ -354,12 +293,10 @@ class SparseAutoencoder(nn.Module):
 
             z_aux = F.relu(pre_res) * aux_sel
 
-            # Decode with decoder weights **detached** (no grad to decoder)
             residual_hat = torch.einsum("btn,dn->btd",
                                         z_aux,
                                         self.W_dec.detach()) + self.b_dec.unsqueeze(0).unsqueeze(0)
 
-            # Masked aux loss (if mask provided); else unmasked
             if mask is not None:
                 aux_num = ((residual_hat - residual).float().pow(2) * mask.unsqueeze(-1)).sum()
                 aux_den = mask.sum().clamp_min(1).to(residual_hat.dtype)
@@ -367,10 +304,8 @@ class SparseAutoencoder(nn.Module):
             else:
                 aux_loss = F.mse_loss(residual_hat.float(), residual.float())
 
-        # Return like before (note: now we return aux_loss here)
         return x_hat, z, pre, aux_loss
 
-# ==================== Losses ====================
 def mse_masked(x_hat: torch.Tensor, x: torch.Tensor, mask_bt: torch.Tensor) -> torch.Tensor:
     diff2 = (x_hat - x) ** 2
     masked = diff2 * mask_bt.unsqueeze(-1)
@@ -382,7 +317,6 @@ def nmse_masked(x_hat: torch.Tensor, x: torch.Tensor, mask_bt: torch.Tensor) -> 
     den = ((x ** 2) * mask_bt.unsqueeze(-1)).sum().clamp_min(1e-12)
     return num / den
 
-# ==================== EMA ====================
 class EMA:
     def __init__(self, module: nn.Module, decay: float = 0.999):
         self.decay = decay
@@ -400,7 +334,6 @@ class EMA:
             if n in self.shadow:
                 p.copy_(self.shadow[n])
 
-# ==================== Dataset ====================
 class ActivationDatasetFiles(Dataset):
     def __init__(self, activations_dir: str, split: str = "train", preload: bool = False, 
                  rank: int = 0, world_size: int = 1, max_files: Optional[int] = None):
@@ -423,13 +356,11 @@ class ActivationDatasetFiles(Dataset):
 
         if max_files is not None and max_files > 0:
              print(f"[dataset] split={split} Limiting to {max_files} files (was {len(files)})")
-             # Shuffle before truncation to avoid bias if files are ordered by time/patient/source
              rng = random.Random(42) 
              rng.shuffle(files)
              files = files[:max_files]
-             files.sort() # Re-sort after selection for deterministic sharding across ranks
+             files.sort()
         
-        # Optional: shard files deterministically across ranks (useful if preloading)
         if world_size > 1 and self.preload:
             files = files[rank::world_size]
             
@@ -473,9 +404,8 @@ class ActivationDatasetFiles(Dataset):
             acts_pad = torch.zeros((B, T, D), dtype=acts[0].dtype)
             masks_pad = torch.zeros((B, T), dtype=torch.bool)
             for i,a in enumerate(acts):
-                L = a.shape[0]; acts_pad[i, -L:, :] = a; masks_pad[i, -L:] = True
+                L = a.shape[0];             acts_pad[i, -L:, :] = a; masks_pad[i, -L:] = True
             acts, m = acts_pad, masks_pad
-        # NOTE: No sanitization here (Option A); keep raw so we can detect NaNs later.
         return {"activations": acts, "masks": m}
 
     def __len__(self): return len(self.batch_files)
@@ -484,7 +414,6 @@ class ActivationDatasetFiles(Dataset):
         if self.preload: return self.data[idx]
         return self._load_file(idx)
 
-# ==================== Manifests & checkpoints ====================
 def write_manifest_once(save_dir: str, split: str, files: List[str], rank: int):
     man = os.path.join(save_dir, f"manifest_{split}.txt")
     if rank == 0 and not os.path.exists(man):
@@ -532,7 +461,6 @@ def save_latest(save_dir: str, sae, opt, global_step: int, files_seen: int, worl
                 sd["optim"] = optim_sd
             torch.save(sd, latest_model)
 
-    # always write the lightweight per-rank breadcrumb
     with open(files_json, "w") as f:
         json.dump({"files_seen": int(files_seen), "step": int(global_step)}, f)
 
@@ -558,8 +486,6 @@ def load_latest(save_dir: str, sae, opt, world_rank: int) -> Tuple[int,int]:
     return global_step, files_seen
 
 def save_best_model(save_dir: str, sae, val_nmse: float, step: int, world_rank: int, tag: str = "best.pt", *, write_meta: bool = True):
-    # For FSDP, ALL ranks must enter the state_dict context and call state_dict().
-    # Rank 0 will get the full dict (rank0_only=True), others get empty.
     is_fsdp = isinstance(sae, FSDP)
 
     if is_fsdp:
@@ -570,10 +496,8 @@ def save_best_model(save_dir: str, sae, val_nmse: float, step: int, world_rank: 
 
     with ctx:
         if is_fsdp:
-            # Collective call
             model_sd = sae.state_dict()
         else:
-            # Non-FSDP: only rank 0 acts
             if world_rank == 0:
                 base = sae.module if hasattr(sae, "module") else sae
                 model_sd = base.state_dict()
@@ -587,7 +511,6 @@ def save_best_model(save_dir: str, sae, val_nmse: float, step: int, world_rank: 
             with open(os.path.join(save_dir, "best_meta.json"), "w") as f:
                 json.dump({"step": int(step), "val_nmse": float(val_nmse), "path": tag}, f)
 
-# ==================== Optimizer ====================
 def make_optimizer(cfg: TrainConfig, params):
     name = cfg.optimizer.lower()
     if name == "adam8bit":
@@ -604,18 +527,9 @@ def make_optimizer(cfg: TrainConfig, params):
     else:
         return torch.optim.Adam(params, lr=cfg.lr, betas=(cfg.beta1, cfg.beta2), eps=cfg.eps, weight_decay=cfg.wd)
 
-# ==================== Training ====================
 def _allreduce_or_bool(mask: torch.Tensor) -> torch.Tensor:
     if not (dist.is_available() and dist.is_initialized()): return mask
     x = mask.to(dtype=torch.int32); dist.all_reduce(x, op=dist.ReduceOp.SUM); return (x > 0)
-
-# def write_rank_progress(save_dir: str, files_seen: int, step: int, rank: int):
-#     path = os.path.join(save_dir, f"latest_files_Progress_rank{rank:02d}.json")
-#     tmp  = path + ".tmp"
-#     with open(tmp, "w") as f:
-#         json.dump({"files_seen": int(files_seen), "step": int(step)}, f)
-#         f.flush(); os.fsync(f.fileno())
-#     os.replace(tmp, path)
 
 def train(cfg: TrainConfig,
           windows_per_file_hint: int = 8,
@@ -633,22 +547,18 @@ def train(cfg: TrainConfig,
 
     env = init_sae_distributed(cfg)
     
-
     rank, world = env["rank"], env["world"]
 
     sae_device = env["sae_device"]; sae_dtype = str2dtype(cfg.dtype)
     ema_enabled = (cfg.ema_enable and not cfg.sae_fsdp)
 
-    # Data
     if rank == 0: print("[allinone_v3] Loading datasets...")
     
-    # Calculate max files if preloading train
     train_max_files = None
     if getattr(cfg, "preload_train", False):
         files_per_step_est = max(1, cfg.micro_bsz // windows_per_file_hint)
-        # 1.1x buffer to ensure we don't run out due to rounding or small files
         train_max_files = int(cfg.train_steps * files_per_step_est * world * 1.1)
-        est_size_gb = (train_max_files * 8.0) / 1024.0 # Approx 8MB per file
+        est_size_gb = (train_max_files * 8.0) / 1024.0
         if rank == 0:
             print(f"[allinone_v3] --preload_train enabled.")
             print(f"              Limiting train set to ~{train_max_files} files (sufficient for {cfg.train_steps} steps)")
@@ -658,17 +568,11 @@ def train(cfg: TrainConfig,
                                            preload=getattr(cfg, "preload_train", False),
                                            rank=rank, world_size=world,
                                            max_files=train_max_files)
-    # Manually shard validation set so we only preload 1/Nth of the data per rank
     val_dataset   = ActivationDatasetFiles(cfg.activations_dir, "val", preload=True, rank=rank, world_size=world, max_files=None)
     print(f"[rank{rank}] local_rank={env['local_rank']} world={world} device={sae_device} n_train_files={len(train_dataset)} n_val_files={len(val_dataset)}")
 
-    # create a per-rank heartbeat so you can ls for it
-    # hb = os.path.join(cfg.save_dir, f"rank_heartbeat_{rank:02d}.txt")
-    # with open(hb, "w") as f:
-    #     f.write(f"hello from rank {rank}\n")
     d_model = train_dataset.model_config.get("hidden_size", cfg.d_model or 0)
     if d_model == 0:
-        # Only rank 0 needs to load the first file to infer d_model, but safe if others do it too (won't preload)
         probe = torch.load(train_dataset.batch_files[0], map_location="cpu")
         acts = probe.get("activations", probe.get("hidden_states"))
         d_model = (acts[0].shape[-1] if isinstance(acts, list) else acts.shape[-1])
@@ -685,37 +589,23 @@ def train(cfg: TrainConfig,
     else:
         if rank == 0: print("[allinone_v3] Skipping manifest for preloaded train set (using per-rank shards)")
 
-    # If we preloaded train, we manually sharded it in __init__, so we use a local sampler (None)
-    # Otherwise, we use DistributedSampler to shard it now.
     use_dist_sampler = (dist.is_available() and dist.is_initialized()) and not getattr(cfg, "preload_train", False)
     train_sampler = DistributedSampler(train_dataset, shuffle=False) if use_dist_sampler else None
-    
-    # For validation:
-    # - We manually sharded the files in ActivationDatasetFiles(..., rank=rank, world_size=world)
-    # - So each rank has a DISJOINT set of files.
-    # - We use a standard SequentialSampler (default for DataLoader(sampler=None))
-    # - This is perfectly fine for FSDP validation because:
-    #   1. We gather metrics at the end using dist.all_reduce(..., op=SUM)
-    #   2. Every sample is seen exactly once across the world (no overlap, no gaps)
     val_sampler   = None  
 
     def collate_file(batch): return batch[0]
     
     def collate_files_concat(file_batch):
-    # file_batch: list of dicts, each is one .pt file -> {"activations":[8,T,D], "masks":[8,T]}
         acts = [b["activations"] for b in file_batch]
         masks = [b["masks"]       for b in file_batch]
         return {
-            "activations": torch.cat(acts,  dim=0),   # [F*8, T, D]
-            "masks":       torch.cat(masks, dim=0),   # [F*8, T]
+            "activations": torch.cat(acts,  dim=0),
+            "masks":       torch.cat(masks, dim=0),
         }
-    # Validation: choose how many files to concatenate to reach desired rows
     assert cfg.val_micro_bsz % windows_per_file_hint == 0, \
         "--val_micro_bsz must be a multiple of windows_per_file_hint (usually 8)"
     val_files_per_step = max(1, cfg.val_micro_bsz // windows_per_file_hint)
     
-    # If sampler is None (e.g. preload_train=True), we might want shuffle=True?
-    # But original code used DistributedSampler(shuffle=False), so we stick to shuffle=False to minimize changes.
     train_loader = DataLoader(train_dataset, batch_size=1, sampler=train_sampler, shuffle=False,
                               num_workers=num_workers_train, prefetch_factor=prefetch_train,
                               persistent_workers=persistent_workers, pin_memory=pin_memory,
@@ -728,7 +618,6 @@ def train(cfg: TrainConfig,
                               pin_memory=pin_memory,
                               collate_fn=collate_files_concat, drop_last=False)
 
-    # Model
     sae = SparseAutoencoder(d_model=d_model, n_latents=cfg.n_latents, k=cfg.k,
                             relu_after_topk=cfg.relu_after_topk, dtype=sae_dtype).to(sae_device)
 
@@ -743,7 +632,6 @@ def train(cfg: TrainConfig,
     opt = make_optimizer(cfg, sae.parameters())
     ema = EMA(sae.module if isinstance(sae, FSDP) else sae, decay=cfg.ema_decay) if ema_enabled else None
 
-    # Resume
     global_step = 0; files_seen = 0
     if resume:
         global_step, files_seen = load_latest(cfg.save_dir, sae, opt, rank)
@@ -760,8 +648,6 @@ def train(cfg: TrainConfig,
     windows_per_file = windows_per_file_hint
     files_per_step = cfg.micro_bsz // windows_per_file
 
-
-    # ---- Accumulator for dead-latent window ----
     base_mod = sae.module if isinstance(sae, FSDP) else sae
     fired_accum = torch.zeros((base_mod.n_latents,), dtype=torch.bool, device=sae_device)
 
@@ -785,12 +671,10 @@ def train(cfg: TrainConfig,
         x = torch.cat(xs, dim=0).to(sae_device, dtype=sae_dtype, non_blocking=True)
         m = torch.cat(ms, dim=0).to(sae_device, dtype=torch.bool, non_blocking=True)
 
-        # ---- OPTION A: DETECT + MASK NaN TOKENS, THEN SANITIZE ----
-        nan_mask   = torch.isnan(x)                 # [B,T,D]
-        nan_tokens = nan_mask.any(dim=-1) & m       # [B,T] only valid tokens
+        nan_mask   = torch.isnan(x)
+        nan_tokens = nan_mask.any(dim=-1) & m
         if nan_tokens.any():
-            m = m & ~nan_tokens                     # drop these tokens from loss
-            # sanitize so forward math can't propagate NaNs
+            m = m & ~nan_tokens
             x = torch.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
 
         vt = int(m.sum().item())
@@ -803,7 +687,6 @@ def train(cfg: TrainConfig,
 
             x_hat = torch.nan_to_num(x_hat, nan=0.0, posinf=0.0, neginf=0.0)
 
-            # ---- Main reconstruction loss (masked) ----
             rec = mse_masked(x_hat.float(), x.float(), m)
             loss = rec + (cfg.aux_coeff * aux_loss if aux_loss is not None else 0.0)
             loss.backward()
@@ -817,14 +700,11 @@ def train(cfg: TrainConfig,
                 fired_any = ((z > 0) & m.unsqueeze(-1)).any(dim=(0,1))
                 fired_accum |= fired_any.to(sae_device)
         else:
-            # No valid tokens on this rank → skip compute, but keep cadence
             rec = torch.tensor(0.0, device=sae_device)
 
-        # optional debug: ensure global_step stays aligned across ranks
         if dist.is_available() and dist.is_initialized():
             gs_t = torch.tensor([global_step], device=sae_device, dtype=torch.int64)
             dist.all_reduce(gs_t, op=dist.ReduceOp.MAX)
-            # all ranks should have identical global_step; if not, this assert will trip fast:
             assert gs_t.item() == global_step, f"desync: local step {global_step} vs max {gs_t.item()}"
 
         if renorm_every and (global_step % renorm_every == 0) and global_step > 0:
@@ -870,7 +750,6 @@ def train(cfg: TrainConfig,
                     va = vb["activations"].to(sae_device, dtype=sae_dtype, non_blocking=True)
                     vm = vb["masks"].to(sae_device, dtype=torch.bool, non_blocking=True)
 
-                    # Detect & mask NaN tokens, then sanitize
                     v_nan = torch.isnan(va)
                     v_nan_tokens = v_nan.any(dim=-1) & vm
                     if v_nan_tokens.any():
@@ -885,12 +764,8 @@ def train(cfg: TrainConfig,
                     vtotal_mse  += float(mse_masked(vx_hat.float(), va.float(), vm).cpu()) * vtoks
                     vtotal_nmse += float(nmse_masked(vx_hat.float(), va.float(), vm).cpu()) * vtoks
                     vtotal_tokens += vtoks
-            # vloss = vtotal_mse  / max(1, vtotal_tokens)
-            # vnmse = vtotal_nmse / max(1, vtotal_tokens)
 
-            # optional: reduce validation metric so rank0 reflects global view
             if dist.is_available() and dist.is_initialized():
-                # Reduce totals (MSE sum, NMSE sum, token count)
                 metrics_t = torch.tensor([vtotal_mse, vtotal_nmse, vtotal_tokens], device=sae_device, dtype=torch.float64)
                 dist.all_reduce(metrics_t, op=dist.ReduceOp.SUM)
                 vtotal_mse_global = metrics_t[0].item()
@@ -904,7 +779,6 @@ def train(cfg: TrainConfig,
                 vnmse = vtotal_nmse / max(1, vtotal_tokens)
 
             val_time = time.time() - val_start_time
-            # print(f"[rank{rank}] [val] end   step={global_step} time={val_time:.3f}s")
 
             if rank == 0: print(json.dumps({"val_loss": vloss, "val_nmse": vnmse, "step": int(global_step), "val_time_sec": round(val_time, 3)}))
             if global_step % 10000 == 0:
@@ -951,7 +825,6 @@ def update_dead_latents(sae: nn.Module, dead_mask: torch.Tensor, opt=None, ema=N
                     ema.shadow[n].data.copy_(p.data)
     return int(idx.numel())
 
-# ==================== CLI ====================
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--activations_dir", type=str, default="activations")
@@ -1018,7 +891,6 @@ def parse_args():
         sae_fsdp=a.sae_fsdp, sae_fsdp_devices=a.sae_fsdp_devices,
         dtype=a.dtype,
     )
-    # Patch in the non-config arg for convenience
     cfg.preload_train = a.preload_train
     return cfg, a
 

@@ -15,12 +15,7 @@ import pandas as pd
 from scipy import stats
 from tqdm import tqdm
 
-# Setup logging (will be configured in main())
 logger = logging.getLogger(__name__)
-
-# =============================================================================
-# Helper Functions
-# =============================================================================
 
 def bh_fdr(pvalues: np.ndarray, alpha: float = 0.05) -> np.ndarray:
     """Benjamini-Hochberg FDR correction (Legacy SciPy compatible)."""
@@ -46,10 +41,6 @@ def bh_fdr(pvalues: np.ndarray, alpha: float = 0.05) -> np.ndarray:
 
 
 SENSE_TO_NER_MAP = {
-
-    # Primary labels first, then fallbacks
-    # IMPORTANT: "medication or therapeutic agent" removed from non-therapeutic senses
-    # to avoid ambiguous matching
     "administrative": ["administrative healthcare event", "medical procedure or intervention"],
     "clinical": ["bodily fluid or secretion", "clinical finding or symptom"],
     "radiological": ["radiological finding or shadow", "anatomical structure"],
@@ -69,11 +60,6 @@ SENSE_TO_NER_MAP = {
     "therapeutic": ["medication or therapeutic agent"],
 }
 
-
-# =============================================================================
-# Data Loading Functions
-# =============================================================================
-
 def load_topk_latents_csv(csv_path: str) -> pd.DataFrame:
     """Load TopK latents CSV and parse JSON columns."""
     df = pd.read_csv(csv_path, low_memory=False)
@@ -87,10 +73,6 @@ def load_topk_latents_csv(csv_path: str) -> pd.DataFrame:
 def load_ner_by_char_offset(ner_path: Path) -> Tuple[Dict, Dict]:
     """
     Load NER spans indexed by (doc_id, char_start) for character-based matching.
-    
-    Returns:
-        index_exact: dict mapping (doc_id, char_start) -> span info
-        index_by_doc: dict mapping doc_id -> list of spans (for range queries)
     """
     index_exact = {}
     index_by_doc = defaultdict(list)
@@ -114,12 +96,10 @@ def load_ner_by_char_offset(ner_path: Path) -> Tuple[Dict, Dict]:
                 'text': obj.get('text', ''),
             }
             
-            # Index by exact char_start
             key = (doc_id, start)
             if key not in index_exact or span_info['score'] > index_exact[key]['score']:
                 index_exact[key] = span_info
             
-            # Also store by doc for range queries
             index_by_doc[doc_id].append(span_info)
     
     logger.info(f"  Loaded {len(index_exact):,} unique (doc_id, char_start) keys")
@@ -132,17 +112,11 @@ def find_ner_for_token(doc_id: str, char_start: int, char_end: int,
                        index_exact: Dict, index_by_doc: Dict) -> Optional[Dict]:
     """
     Find NER span that covers the given token character range.
-    
-    Strategy:
-    1. Try exact match on (doc_id, char_start)
-    2. If no exact match, search for overlapping spans in the document
     """
-    # Try exact match first (fast)
     key = (doc_id, char_start)
     if key in index_exact:
         return index_exact[key]
     
-    # Fall back to range search (slower but handles partial overlaps)
     if doc_id not in index_by_doc:
         return None
     
@@ -150,23 +124,16 @@ def find_ner_for_token(doc_id: str, char_start: int, char_end: int,
     best_score = -1
     
     for span in index_by_doc[doc_id]:
-        # Check for overlap: token [char_start, char_end) overlaps span [start, end)
         if span['end'] <= char_start:
-            continue  # Span ends before token starts
+            continue
         if span['start'] >= char_end:
-            continue  # Span starts after token ends
+            continue
         
-        # Overlap exists - keep highest scoring span
         if span['score'] > best_score:
             best_span = span
             best_score = span['score']
     
     return best_span
-
-
-# =============================================================================
-# Metric Computation Functions
-# =============================================================================
 
 def compute_entropy_per_sense(
     df: pd.DataFrame, 
@@ -251,15 +218,12 @@ def compute_jaccard_cross_sense(
                 group1 = lemma_df[lemma_df[sense_col] == sense1]
                 group2 = lemma_df[lemma_df[sense_col] == sense2]
                 
-                # Minimum sample requirement: at least 5 samples per sense (same as k=10 analysis)
                 if len(group1) < 5 or len(group2) < 5:
                     continue
                 
-                # Store original sample sizes (for reporting consistency with k=10)
                 n_samples_sense1_original = len(group1)
                 n_samples_sense2_original = len(group2)
                 
-                # Sample if groups are large
                 g1_idxs = group1.index.tolist()
                 g2_idxs = group2.index.tolist()
                 
@@ -268,7 +232,6 @@ def compute_jaccard_cross_sense(
                 if len(g2_idxs) > 100:
                     g2_idxs = np.random.choice(g2_idxs, 100, replace=False).tolist()
                 
-                # Store sampled sizes (for reporting)
                 n_samples_sense1_sampled = len(g1_idxs)
                 n_samples_sense2_sampled = len(g2_idxs)
                 
@@ -281,7 +244,6 @@ def compute_jaccard_cross_sense(
                     
                     for idx2 in g2_idxs:
                         row2 = lemma_df.loc[idx2]
-                        # Safety check: never compare same document position
                         if row1.get("doc_id") == row2.get("doc_id") and row1.get("position") == row2.get("position"):
                             continue
                             
@@ -327,8 +289,6 @@ def identify_sense_linked_latents(
     """
     Identify sense-linked latents using co-occurrence stats and optional probe metrics.
     """
-    
-    # 1. Filter by Probe AUROC and/or AP if available
     valid_latents = None
     if probe_stats is not None and not probe_stats.empty:
         probe_filtered = probe_stats.copy()
@@ -346,7 +306,6 @@ def identify_sense_linked_latents(
         filter_msg = " and ".join(filter_parts) if filter_parts else "no threshold"
         logger.info(f"  Filtering to {len(valid_latents)} latents with {filter_msg}")
 
-    # 2. Explode Data (Token -> Latent mappings)
     df_exploded = df.explode(latent_ids_col)
     df_exploded = df_exploded.dropna(subset=[latent_ids_col])
     if df_exploded.empty:
@@ -354,38 +313,27 @@ def identify_sense_linked_latents(
     
     df_exploded["latent_id"] = df_exploded[latent_ids_col].astype(int)
     
-    # Pre-filter to valid latents if available
     if valid_latents is not None:
         df_exploded = df_exploded[df_exploded["latent_id"].isin(valid_latents)]
         if df_exploded.empty:
             logger.warning("No latents passed probe filtering!")
             return pd.DataFrame()
 
-    # 3. Compute Counts
-    # A. Total tokens per (Lemma, Sense)
     sense_totals = df.groupby(["lemma", sense_col]).size().rename("n_sense_total")
-    
-    # B. Latent hits per (Lemma, Sense, Latent)
     latent_hits = df_exploded.groupby(["lemma", sense_col, "latent_id"]).size().rename("n_hits")
     
-    # Join
     stats_df = latent_hits.reset_index().join(sense_totals, on=["lemma", sense_col])
-    
-    # 4. Calculate P(Latent | Sense)
     stats_df["presence_rate"] = stats_df["n_hits"] / stats_df["n_sense_total"]
     
-    # 5. Calculate Specificity (Diff against other senses)
     lemma_latent_hits = df_exploded.groupby(["lemma", "latent_id"]).size().rename("n_lemma_hits")
     lemma_totals = df.groupby("lemma").size().rename("n_lemma_total")
     
     stats_df = stats_df.join(lemma_latent_hits, on=["lemma", "latent_id"])
     stats_df = stats_df.join(lemma_totals, on="lemma")
     
-    # "Other" stats
     stats_df["n_other_hits"] = stats_df["n_lemma_hits"] - stats_df["n_hits"]
     stats_df["n_other_total"] = stats_df["n_lemma_total"] - stats_df["n_sense_total"]
     
-    # P(Latent | Not Sense)
     stats_df["presence_rate_other"] = np.where(
         stats_df["n_other_total"] > 0,
         stats_df["n_other_hits"] / stats_df["n_other_total"],
@@ -394,7 +342,6 @@ def identify_sense_linked_latents(
     
     stats_df["presence_rate_diff"] = stats_df["presence_rate"] - stats_df["presence_rate_other"]
     
-    # 6. Apply Thresholds
     filtered = stats_df[
         (stats_df["presence_rate"] >= presence_min) & 
         (stats_df["presence_rate_diff"] >= presence_diff_min)
@@ -402,8 +349,6 @@ def identify_sense_linked_latents(
     
     if filtered.empty:
         return pd.DataFrame()
-
-    # 7. Fisher Exact Test (Significance)
     pvalues = []
     for _, row in filtered.iterrows():
         table = [
@@ -418,7 +363,6 @@ def identify_sense_linked_latents(
             
     filtered["pvalue"] = pvalues
     
-    # FDR Correction (Benjamini-Hochberg)
     filtered["qvalue"] = 1.0
     for lemma, group in filtered.groupby("lemma"):
         if len(group) > 1:
@@ -427,10 +371,8 @@ def identify_sense_linked_latents(
         else:
             filtered.loc[group.index, "qvalue"] = group["pvalue"]
             
-    # Filter by FDR threshold
     filtered = filtered[filtered["qvalue"] < fdr_threshold]
     
-    # 8. Merge Probe Metadata (if available)
     if probe_stats is not None and not filtered.empty:
         filtered = filtered.merge(probe_stats, on="latent_id", how="left")
         
@@ -438,9 +380,7 @@ def identify_sense_linked_latents(
 
 
 def sanity_check_latent_signal(csv_path: str, word: str, top_n: int = 10):
-    """
-    Sanity check to see if any latent is differentiating the senses for a given word.
-    """
+    """Sanity check to see if any latent is differentiating the senses for a given word."""
     logger.info(f"Running sanity check for word '{word}'...")
     
     df = load_topk_latents_csv(csv_path)
@@ -475,11 +415,6 @@ def sanity_check_latent_signal(csv_path: str, word: str, top_n: int = 10):
                 if len(top_latent) > 0:
                     latent_id, count = top_latent.index[0], top_latent.iloc[0]
                     logger.info(f"  Sense '{sense}': {len(sense_group)} occurrences, top latent {latent_id} appears {count} times")
-
-
-# =============================================================================
-# Main Function
-# =============================================================================
 
 def main():
     parser = argparse.ArgumentParser(
@@ -530,27 +465,21 @@ def main():
         sanity_check_latent_signal(args.topk_csv, args.sanity_check_word)
         return
 
-    # ==========================================================================
-    # 1. Load TopK latents
-    # ==========================================================================
     logger.info(f"Loading TopK latents from {args.topk_csv}...")
     df_topk = load_topk_latents_csv(args.topk_csv)
     logger.info(f"  Rows: {len(df_topk):,}")
     logger.info(f"  Columns: {list(df_topk.columns)}")
     
-    # Check for required char offset columns
     if 'char_start' not in df_topk.columns or 'char_end' not in df_topk.columns:
         logger.error("TopK CSV must have 'char_start' and 'char_end' columns!")
         logger.error("Run fix_topk_char_offsets_v2.py first, or use updated sae_viewer_topk_sharded.py")
         return
     
-    # Filter to valid char offsets
     df_topk = df_topk.dropna(subset=['char_start', 'char_end'])
     df_topk['char_start'] = df_topk['char_start'].astype(int)
     df_topk['char_end'] = df_topk['char_end'].astype(int)
     df_topk['doc_id'] = df_topk['doc_id'].astype(str)
     
-    # Filter out zero offsets (invalid)
     valid_offsets = (df_topk['char_start'] > 0) | (df_topk['char_end'] > 0)
     df_topk = df_topk[valid_offsets]
     logger.info(f"  Rows with valid char offsets: {len(df_topk):,}")
@@ -558,10 +487,6 @@ def main():
     if df_topk.empty:
         logger.error("No rows with valid char offsets! Check your topk_csv.")
         return
-
-    # ==========================================================================
-    # 2. Load NER indexed by character offset
-    # ==========================================================================
     ner_path = Path(args.ner_jsonl)
     if not ner_path.exists():
         logger.error(f"NER file not found: {ner_path}")
@@ -569,23 +494,15 @@ def main():
     
     index_exact, index_by_doc = load_ner_by_char_offset(ner_path)
 
-    # ==========================================================================
-    # 3. Load Lexicon and Merge
-    # ==========================================================================
     logger.info(f"Loading Lexicon from {args.lexicon_csv}...")
     df_lex = pd.read_csv(args.lexicon_csv)
     df_topk["lemma_lower"] = df_topk["lemma"].str.lower()
     df_lex["term_lower"] = df_lex["term"].str.lower()
     
-    # Merge with lexicon (creates duplicates: 1 token -> N senses)
     df_merged = df_topk.merge(df_lex, left_on="lemma_lower", right_on="term_lower", how="inner")
     logger.info(f"After lexicon merge: {len(df_merged):,} rows")
 
-    # ==========================================================================
-    # 4. Disambiguate using CHARACTER OFFSET matching with STRICT filtering
-    #    (Same as jaccard_10_final.py: len(matches) == 1)
-    # ==========================================================================
-    logger.info("Disambiguating senses using STRICT character offset matching (len(matches) == 1)...")
+    logger.info("Disambiguating senses using character offset matching...")
     
     disambiguation_stats = defaultdict(int)
     valid_rows = []
@@ -593,7 +510,6 @@ def main():
     def norm(s):
         return str(s).lower().strip() if s else ''
     
-    # Build NER map normalized (like jaccard_10_final.py)
     ner_map_norm = {}
     for k, v in SENSE_TO_NER_MAP.items():
         if isinstance(v, list): 
@@ -601,7 +517,6 @@ def main():
         else: 
             ner_map_norm[k] = [v.lower().strip()]
     
-    # Group by term to get possible senses (like k=10 analysis)
     for term in df_lex['term_lower'].unique():
         term_df = df_merged[df_merged['lemma_lower'] == term]
         if len(term_df) < 2:
@@ -614,7 +529,6 @@ def main():
             char_start = int(row['char_start'])
             char_end = int(row['char_end'])
             
-            # Find NER span for this token
             ner_span = find_ner_for_token(doc_id, char_start, char_end, index_exact, index_by_doc)
             
             if ner_span is None:
@@ -623,7 +537,6 @@ def main():
             
             ner_label = norm(ner_span['entity_group'])
             
-            # STRICT MATCHING: Check which senses this NER label could match (like k=10)
             matches = []
             for sense in possible_senses:
                 sense_norm = norm(sense)
@@ -654,9 +567,6 @@ def main():
     df_clean = pd.DataFrame(valid_rows)
     logger.info(f"Matched rows: {len(df_clean):,}")
 
-    # ==========================================================================
-    # 5. Check for Specialty Polysemy Conflicts
-    # ==========================================================================
     terms_to_drop = set()
     for term, group in df_clean.groupby("lemma_lower"):
         senses = group["sense"].unique()
@@ -671,43 +581,27 @@ def main():
     df_clean = df_clean[~df_clean["lemma_lower"].isin(terms_to_drop)]
     logger.info(f"After dropping conflicting terms: {len(df_clean):,} rows")
 
-    # ==========================================================================
-    # 6. Ensure latent_ids is parsed
-    # ==========================================================================
     if "latent_ids" not in df_clean.columns and "latent_ids_json" in df_clean.columns:
         df_clean["latent_ids"] = df_clean["latent_ids_json"].apply(
             lambda x: json.loads(x) if isinstance(x, str) else []
         )
 
-    # ==========================================================================
-    # 7. Create output directory
-    # ==========================================================================
     os.makedirs(args.output_dir, exist_ok=True)
 
-    # ==========================================================================
-    # 8. Compute Jaccard
-    # ==========================================================================
     logger.info("Computing Jaccard similarity...")
     df_jac = compute_jaccard_cross_sense(df_clean)
     jac_path = os.path.join(args.output_dir, "jaccard_cross_sense.csv")
     df_jac.to_csv(jac_path, index=False)
     logger.info(f"  Saved {len(df_jac)} Jaccard pairs to {jac_path}")
 
-    # ==========================================================================
-    # 9. Compute Entropy
-    # ==========================================================================
     logger.info("Computing entropy per sense...")
     df_ent = compute_entropy_per_sense(df_clean)
     ent_path = os.path.join(args.output_dir, "entropy_per_sense.csv")
     df_ent.to_csv(ent_path, index=False)
     logger.info(f"  Saved {len(df_ent)} entropy records to {ent_path}")
 
-    # ==========================================================================
-    # 10. Identify Sense-Linked Latents
-    # ==========================================================================
     logger.info("Identifying sense-linked latents...")
     
-    # Load Probe Stats if available
     probe_df = None
     if args.probe_csv and os.path.exists(args.probe_csv):
         logger.info(f"  Loading probe stats from {args.probe_csv}...")
@@ -728,9 +622,6 @@ def main():
     df_linked.to_csv(linked_path, index=False)
     logger.info(f"  Saved {len(df_linked)} sense-linked latents to {linked_path}")
 
-    # ==========================================================================
-    # 11. Summary
-    # ==========================================================================
     logger.info("\n" + "="*60)
     logger.info("SUMMARY")
     logger.info("="*60)

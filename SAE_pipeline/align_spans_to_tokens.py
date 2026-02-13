@@ -18,8 +18,6 @@ import pandas as pd
 from transformers import AutoTokenizer
 from tqdm import tqdm
 
-# Global variable for worker processes to hold the tokenizer
-# This prevents pickling the tokenizer across processes
 worker_tokenizer = None
 
 def get_local_model_path(model_id: str) -> str:
@@ -34,7 +32,6 @@ def worker_init(tokenizer_name: str):
     """Initialize tokenizer in each worker process."""
     global worker_tokenizer
     local_path = get_local_model_path(tokenizer_name)
-    # Suppress tokenizers parallelism warning inside workers
     import os
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     try:
@@ -74,19 +71,13 @@ def process_document(args: Tuple[str, str, List[Dict], bool]) -> List[Dict]:
             
         token_positions: List[int] = []
         
-        # Optimized overlap check: 
-        # Since offsets are sorted, we could binary search, but linear scan 
-        # is usually fast enough for typical context lengths (e.g. 2048-8192).
         for idx, (tok_start, tok_end) in enumerate(offsets):
             if tok_start is None or tok_end is None:
                 continue
-            # Token is strictly before span
             if tok_end <= start:
                 continue
-            # Token is strictly after span
             if tok_start >= end:
                 break
-            # Overlap found
             token_positions.append(idx)
             
         if not token_positions:
@@ -123,8 +114,6 @@ def load_ner_spans_generator(path: Path) -> Iterable[Dict]:
             for item in items:
                 yield item
     elif path.suffix == ".csv":
-        # CSV requires loading pandas, but we can iterate rows
-        # Using chunksize to avoid loading 7GB into DataFrame if possible
         for chunk in pd.read_csv(path, chunksize=10000):
             for _, row in chunk.iterrows():
                 yield {
@@ -156,7 +145,6 @@ def main():
 
     args = parser.parse_args()
 
-    # 1. Load Text Data
     print(f"Loading text from {args.csv_path}...")
     df = pd.read_csv(args.csv_path)
     if args.doc_id_column and args.doc_id_column not in df.columns:
@@ -167,25 +155,19 @@ def main():
     else:
         df["__doc_id"] = df.index.astype(str)
 
-    # Create map: doc_id -> text
-    # This is fast for lookup
     text_map: Dict[str, str] = dict(zip(df["__doc_id"], df[args.text_column].astype(str)))
-    del df # Free memory
+    del df
     print(f"Loaded {len(text_map)} source documents.")
 
-    # 2. Group Spans by Doc ID
     print(f"Loading and grouping NER spans from {args.ner_jsonl}...")
     ner_path = Path(args.ner_jsonl)
     spans_by_doc: Dict[str, List[Dict]] = defaultdict(list)
     
-    # Using a progress bar for loading the 7GB file
-    # We count lines first if it's jsonl for a better progress bar, otherwise just iterate
     total_lines = None
     if ner_path.suffix == ".jsonl":
-        # Quick line count estimation
         print("Estimating file size...")
         import os
-        total_lines = int(os.path.getsize(ner_path) / 300) # Crude approx
+        total_lines = int(os.path.getsize(ner_path) / 300)
     
     count = 0
     for span in tqdm(load_ner_spans_generator(ner_path), total=total_lines, desc="Reading Spans", unit="span"):
@@ -196,8 +178,6 @@ def main():
     
     print(f"Loaded {count} spans across {len(spans_by_doc)} documents.")
 
-    # 3. Prepare Work Items
-    # Only process documents that exist in both text source and span list
     work_items = []
     for doc_id, doc_spans in spans_by_doc.items():
         if doc_id in text_map:
@@ -205,22 +185,16 @@ def main():
     
     print(f"Prepared {len(work_items)} documents for alignment.")
     
-    # Clear memory before forking
     del spans_by_doc
     del text_map
     import gc; gc.collect()
 
-    # 4. Parallel Processing
     num_workers = args.num_workers if args.num_workers else multiprocessing.cpu_count()
-    # Reserve a core for the main process/OS
     num_workers = max(1, num_workers - 1)
     
     print(f"Starting alignment with {num_workers} worker processes...")
     
     aligned_all = []
-    
-    # Chunksize determines how many documents a worker grabs at once.
-    # Larger chunksize = less overhead but less granular progress updates.
     chunksize = min(100, max(1, len(work_items) // (num_workers * 4)))
 
     with multiprocessing.Pool(
@@ -228,7 +202,6 @@ def main():
         initializer=worker_init, 
         initargs=(args.tokenizer_name,)
     ) as pool:
-        # imap_unordered is faster as it yields results as soon as they are ready
         for doc_aligned in tqdm(
             pool.imap_unordered(process_document, work_items, chunksize=chunksize),
             total=len(work_items),
@@ -239,7 +212,6 @@ def main():
 
     print(f"Aligned {len(aligned_all)} total spans.")
 
-    # 5. Output
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     

@@ -24,7 +24,6 @@ def compute_self_jaccard(df, word, n_samples=2000):
     """
     word_df = df[df["lemma"].str.lower() == word].copy()
     
-    # Need at least 2 occurrences to compare
     if len(word_df) < 2:
         return []
 
@@ -33,7 +32,6 @@ def compute_self_jaccard(df, word, n_samples=2000):
         return []
 
     scores = []
-    # Bootstrap sampling
     for _ in range(n_samples):
         a, b = random.sample(latent_sets, 2)
         intersection = len(a & b)
@@ -60,10 +58,9 @@ def main():
     df['lemma_lower'] = df['lemma'].str.lower()
     print(f"Rows with valid char offsets: {len(df)}")
     
-    # Load NER by char offset (same method as jaccard_10_final.py)
     print("Loading NER spans by character offset...")
-    ner_exact = {}  # (doc_id, char_start) -> entity_group
-    ner_by_doc = defaultdict(list)  # doc_id -> list of spans
+    ner_exact = {}
+    ner_by_doc = defaultdict(list)
     
     with open(args.ner_jsonl) as f:
         for line in f:
@@ -83,11 +80,9 @@ def main():
         char_start = int(row['char_start'])
         char_end = int(row['char_end'])
         
-        # Try exact match first
         if (doc_id, char_start) in ner_exact:
             return ner_exact[(doc_id, char_start)]
         
-        # Fall back to overlap search
         for span in ner_by_doc.get(doc_id, []):
             if span['end'] > char_start and span['start'] < char_end:
                 return span['grp']
@@ -96,7 +91,6 @@ def main():
     df['ner_label'] = df.apply(get_ner_label, axis=1)
     print(f"Rows with NER labels: {df['ner_label'].notna().sum()}")
     
-    # Filter to only include tokens with NER labels (quality control for consistency)
     df_with_ner = df[df['ner_label'].notna()].copy()
     print(f"Filtered to {len(df_with_ner)} rows with NER labels")
     
@@ -107,7 +101,6 @@ def main():
     print("-" * 45)
     
     for term in CONTROL_TERMS:
-        # Use filtered dataframe with NER labels
         scores = compute_self_jaccard(df_with_ner, term)
         if scores:
             mean_j = np.mean(scores)
@@ -119,7 +112,6 @@ def main():
     if all_scores:
         baseline_mean = np.mean(all_scores)
         
-        # Save raw distribution for ECDF
         os.makedirs(args.output_dir, exist_ok=True)
         out_path = os.path.join(args.output_dir, "monosemantic_baseline_dist.csv")
         pd.DataFrame({"jaccard": all_scores}).to_csv(out_path, index=False)

@@ -51,8 +51,6 @@ except ImportError as e:
     raise RuntimeError("Please install transformers") from e
 
 
-# ---------------------------- Distributed setup ----------------------------
-
 def ddp_setup_if_needed(gpus_per_rank: int = None) -> Tuple[int, int, int]:
     """
     Setup distributed training environment.
@@ -69,16 +67,13 @@ def ddp_setup_if_needed(gpus_per_rank: int = None) -> Tuple[int, int, int]:
     world = int(os.environ.get("WORLD_SIZE", 1))
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
 
-    # Partition GPUs if requested (needed for device_map="auto" with multiple ranks)
     if gpus_per_rank is not None and gpus_per_rank > 0 and world > 1:
-        # Get original CUDA_VISIBLE_DEVICES
         orig_visible = os.environ.get("CUDA_VISIBLE_DEVICES", None)
         if orig_visible:
             all_gpus = [int(g.strip()) for g in orig_visible.split(",")]
         else:
             all_gpus = list(range(torch.cuda.device_count()))
         
-        # Compute this rank's GPU slice
         start_idx = local_rank * gpus_per_rank
         end_idx = start_idx + gpus_per_rank
         my_gpus = all_gpus[start_idx:end_idx]
@@ -91,13 +86,10 @@ def ddp_setup_if_needed(gpus_per_rank: int = None) -> Tuple[int, int, int]:
                 f"Reduce --nproc-per-node or --gpus_per_rank."
             )
         
-        # Re-export CUDA_VISIBLE_DEVICES to only show this rank's GPUs
         new_visible = ",".join(str(g) for g in my_gpus)
         os.environ["CUDA_VISIBLE_DEVICES"] = new_visible
         print(f"[Info][rank {rank}] Partitioned GPUs: using devices {new_visible} (from original {orig_visible})")
         
-        # After re-exporting, device indices reset to 0..len(my_gpus)-1
-        # Set device to 0 (first of this rank's partition)
         if torch.cuda.is_available():
             torch.cuda.set_device(0)
     else:
@@ -114,16 +106,10 @@ def shard_indices(n_total: int, rank: int, world: int, perm: torch.Tensor) -> to
     # Option A sharding: indices i where i % world == rank, on a (maybe shuffled) permutation
     return perm[rank::world]
 
-
-# ---------------------------- L2 normalize (exact original) ----------------------------
-
 def l2_normalize_per_token(x: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
     x = x - x.mean(dim=-1, keepdim=True)
     denom = x.norm(dim=-1, keepdim=True).clamp_min(eps)
     return x / denom
-
-
-# ---------------------------- Dataset for windowed texts ----------------------------
 
 class WindowedTextDataset(Dataset):
     """
@@ -170,32 +156,29 @@ class WindowedTextDataset(Dataset):
                     "ids": ids,
                     "att": att,
                     "global_row_index": int(global_row),
-                    "doc_id": doc_id,  # actual CSV document ID
+                    "doc_id": doc_id,
                     "window_index_within_note": 0,
                     "token_start": 0,
                     "token_end": len(ids),
-                    "text": txt,  # Store original text for offset computation
+                    "text": txt,
                 })
             else:
                 start = 0
                 widx = 0
-                # iterate like: for start in range(0, max(0, len(ids)-1), stride)
-                # keep consistent with original; we stop when start >= len(ids)-1
                 limit = max(0, len(ids) - 1)
                 while start <= limit:
                     end = min(start + self.ctx_len, len(ids))
                     window_ids = ids[start:end]
                     window_att = att[start:end]
-                    # For offsets, we'll need the text segment; approximate for now
                     self.windows.append({
                         "ids": window_ids,
                         "att": window_att,
                         "global_row_index": int(global_row),
-                        "doc_id": doc_id,  # actual CSV document ID
+                        "doc_id": doc_id,
                         "window_index_within_note": int(widx),
                         "token_start": int(start),
                         "token_end": int(end),
-                        "text": txt,  # Store original text for offset computation
+                        "text": txt,
                     })
                     if end == len(ids):
                         break
@@ -208,9 +191,6 @@ class WindowedTextDataset(Dataset):
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         return self.windows[idx]
 
-
-# ---------------------------- Collate (fixed ctx_len, left-pad like original) ----------------------------
-
 def pad_collate(batch: List[Dict[str, Any]], pad_id: int, ctx_len: int, 
                 save_offsets: bool = False, tokenizer=None, add_bos_eos: bool = True) -> Dict[str, torch.Tensor]:
     bsz = len(batch)
@@ -221,7 +201,7 @@ def pad_collate(batch: List[Dict[str, Any]], pad_id: int, ctx_len: int,
     window_index = torch.empty((bsz,), dtype=torch.long)
     token_start = torch.empty((bsz,), dtype=torch.long)
     token_end = torch.empty((bsz,), dtype=torch.long)
-    doc_ids = []  # Store actual document IDs (may be strings or ints)
+    doc_ids = []
 
     char_offsets = [] if save_offsets else None
 
@@ -231,16 +211,12 @@ def pad_collate(batch: List[Dict[str, Any]], pad_id: int, ctx_len: int,
         am = list(item["att"])
         L = len(seq)
         if L < T:
-            # left-pad to length T (like original)
             pad_len = T - L
             seq = [pad_id] * pad_len + seq
             am  = [0] * pad_len + am
-            # For offsets: pad with (0,0) tuples
             if save_offsets and tokenizer is not None:
-                # Re-encode to get offsets (only for the original sequence part)
                 orig_text = item.get("text", "")
                 if orig_text:
-                    # Use fast tokenizer's offset_mapping if available
                     try:
                         if hasattr(tokenizer, "backing_tokenizer"):
                             tok_obj = tokenizer.backing_tokenizer
@@ -254,7 +230,6 @@ def pad_collate(batch: List[Dict[str, Any]], pad_id: int, ctx_len: int,
                         if isinstance(enc_with_offsets, dict):
                             offsets_list = enc_with_offsets.get("offset_mapping", [])
                         else:
-                            # Fast tokenizer returns tuple (input_ids, attention_mask)
                             offsets_list = []
                     except Exception:
                         offsets_list = []
@@ -264,7 +239,6 @@ def pad_collate(batch: List[Dict[str, Any]], pad_id: int, ctx_len: int,
                 else:
                     offsets_list = [(0, 0)] * len(orig_seq)
                 
-                # Pad offsets (left-pad like tokens)
                 pad_offsets = [(0, 0)] * pad_len
                 offsets_list = pad_offsets + offsets_list[:T]
                 if len(offsets_list) < T:
@@ -314,14 +288,11 @@ def pad_collate(batch: List[Dict[str, Any]], pad_id: int, ctx_len: int,
         "window_index": window_index,
         "token_start": token_start,
         "token_end": token_end,
-        "doc_id": doc_ids,  # actual document IDs from CSV
+        "doc_id": doc_ids,
     }
     if save_offsets and char_offsets:
         result["char_offsets"] = char_offsets
     return result
-
-
-# ---------------------------- Hook capture utilities ----------------------------
 
 def _find_decoder_layers_module(model):
     """
@@ -358,7 +329,6 @@ def _get_layer_acts_hooked(model, input_ids, attention_mask, layer_index: int, n
     Returns activations on the model's device, shape [B, T, H].
     """
     layers = _find_decoder_layers_module(model)
-    # original: disallow negative indices
     if layer_index < 0 or layer_index >= len(layers):
         raise IndexError(f"layer_index {layer_index} out of range (have {len(layers)})")
     target = layers[layer_index]
@@ -381,9 +351,6 @@ def _get_layer_acts_hooked(model, input_ids, attention_mask, layer_index: int, n
         acts = l2_normalize_per_token(acts)
     return acts
 
-
-# ---------------------------- Activation extraction (tries hook, falls back) ----------------------------
-
 def extract_layer_hidden_states(
     model,
     batch: Dict[str, torch.Tensor],
@@ -398,12 +365,10 @@ def extract_layer_hidden_states(
             ids = batch["input_ids"].to(device, non_blocking=True)
             att = batch["attention_mask"].to(device, non_blocking=True)
 
-            # Try hook path first (original behavior)
             acts = None
             try:
                 acts = _get_layer_acts_hooked(model, ids, att, layer_index, normalize=normalize)
             except Exception:
-                # Fallback: output_hidden_states=True path, with idx = clamp(layer_index+1, 0, L-1)
                 out = model(input_ids=ids, attention_mask=att, output_hidden_states=True, use_cache=False)
                 hs = out.hidden_states
                 L = len(hs)
@@ -412,11 +377,7 @@ def extract_layer_hidden_states(
                 if normalize:
                     acts = l2_normalize_per_token(acts)
 
-        # Move to CPU; keep full length [B, T, H] (no slicing/zeroing)
         return acts.detach().to("cpu")
-
-
-# ---------------------------- Main ----------------------------
 
 def parse_args():
     p = argparse.ArgumentParser(description="Generate LLM hidden activations (Option A sharding).")
@@ -432,7 +393,6 @@ def parse_args():
                    help="Decoder block index for hook; fallback uses hidden_states[idx=clamp(layer_index+1,...)]")
     p.add_argument("--ctx_len", type=int, default=64)
     p.add_argument("--stride", type=int, default=None, help="Token step between windows; default = ctx_len (no overlap)")
-    # accept both flags; --batch_texts is an alias for --llm_micro_bsz
     p.add_argument("--llm_micro_bsz", "--batch_texts", dest="llm_micro_bsz", type=int, default=4)
 
     p.add_argument("--output_dir", type=str, required=True)
@@ -482,13 +442,10 @@ def main():
 
     args = parse_args()
     
-    # Determine gpus_per_rank for GPU partitioning
-    # This is critical when using device_map="auto" with multiple ranks
     gpus_per_rank = args.gpus_per_rank
     world_size = int(os.environ.get("WORLD_SIZE", 1))
     
     if args.device_map == "auto" and world_size > 1:
-        # Auto-compute gpus_per_rank if not specified
         orig_visible = os.environ.get("CUDA_VISIBLE_DEVICES", None)
         if orig_visible:
             n_gpus = len([g for g in orig_visible.split(",") if g.strip()])
@@ -508,7 +465,6 @@ def main():
     rank, world, local_rank = ddp_setup_if_needed(gpus_per_rank=gpus_per_rank)
     device = torch.device(f"cuda:{torch.cuda.current_device()}" if torch.cuda.is_available() else "cpu")
 
-    # ---------------- Attention implementation prefs ----------------
     try:
         if args.attn_impl == "flash2":
             print(f"[Info][rank {rank}] Requesting attn_implementation=flash_attention_2")
@@ -528,7 +484,6 @@ def main():
     except Exception as e:
         print(f"[Warn][rank {rank}] Could not set attention backend preference: {e}")
 
-    # ---------------- Load data ----------------
     if rank == 0:
         print(f"[Info] Loading CSV from {args.csv_path}")
     df = pd.read_csv(args.csv_path)
@@ -542,26 +497,22 @@ def main():
     if rank == 0:
         print(f"[Info] Total rows: {N}")
 
-    # Global permutation (shared seed) so all ranks compute same split
     gen = torch.Generator()
     gen.manual_seed(args.shuffle_seed if args.shuffle else 0)
     perm = torch.randperm(N, generator=gen) if args.shuffle else torch.arange(N)
 
-    # Train/Val split (consistent across ranks)
     val_p = max(0.0, min(0.99, float(args.val_percent)))
     n_val = int(round(N * val_p))
     n_train = N - n_val
     train_idx_global = perm[:n_train]
     val_idx_global   = perm[n_train:] if n_val > 0 else torch.empty(0, dtype=torch.long)
 
-    # Shard both splits via Option A
     train_idx_local = shard_indices(n_train, rank, world, train_idx_global)
     val_idx_local   = shard_indices(n_val,   rank, world, val_idx_global) if n_val > 0 else torch.empty(0, dtype=torch.long)
 
     if rank == 0:
         print(f"[Info] Sharding with Option A across world={world}. Train {n_train} / Val {n_val}")
 
-    # Convert local indices to numpy (for saving manifests)
     train_np = None
     val_np = None
     try:
@@ -572,8 +523,6 @@ def main():
         if rank == 0:
             print(f"[Warn] Could not convert indices to numpy: {e}")
 
-    # ---------------- Tokenizer & Model ----------------
-    # Map model IDs to local paths if available
     def get_local_model_path(model_id: str) -> str:
         """Map HuggingFace model IDs to local paths if models are available locally."""
         model_path_map = {
@@ -596,12 +545,10 @@ def main():
 
     if rank == 0:
         print(f"[Info] Loading model: {local_model_path} (from {args.model_id}) on device {device}")
-    # Try to pass attn_implementation if supported
     extra_model_kwargs = {}
     if args.attn_impl in ("sdpa", "flash2", "xformers"):
         extra_model_kwargs["attn_implementation"] = {"sdpa":"sdpa","flash2":"flash_attention_2","xformers":"xformers"}[args.attn_impl]
     
-    # Determine device_map
     if args.device_map:
         use_device_map = args.device_map
     elif device.type == "cuda":
@@ -628,12 +575,10 @@ def main():
             trust_remote_code=True,
         ).eval()
 
-    # ---------------- Output dirs ----------------
     out_root = Path(args.output_dir)
     shard_dir = out_root / f"shard_{rank:02d}"
     shard_dir.mkdir(parents=True, exist_ok=True)
 
-    # Save metadata once per rank
     meta = {
         "rank": rank, "world_size": world, "local_rank": local_rank,
         "model_id": args.model_id, "dtype": args.dtype, "layer_index": args.layer_index,
@@ -659,7 +604,6 @@ def main():
     with open(shard_dir / "metadata.json", "w") as f:
         json.dump(meta, f, indent=2)
 
-    # Dump indices to .npy for union/disjoint checks
     try:
         if train_np is not None:
             import numpy as _np
@@ -668,7 +612,6 @@ def main():
     except Exception as e:
         print(f"[Warn][rank {rank}] Could not save indices npy files: {e}")
 
-    # ---------------- Helpers ----------------
     def run_split(name: str, idx_local: torch.Tensor):
         if idx_local.numel() == 0:
             if rank == 0: print(f"[Info] split={name}: no local samples on rank {rank}")
@@ -677,11 +620,10 @@ def main():
         src_rows = idx_local.tolist()
         texts = df.iloc[src_rows][args.text_column].astype(str).tolist()
         
-        # Get actual doc_ids from CSV column (or use row index as fallback)
         if args.doc_id_column and args.doc_id_column in df.columns:
             doc_ids = df.iloc[src_rows][args.doc_id_column].tolist()
         else:
-            doc_ids = src_rows  # Fallback to row indices
+            doc_ids = src_rows
 
         ds = WindowedTextDataset(
             texts=texts,
@@ -710,13 +652,11 @@ def main():
         bidx = 0
 
         for batch in dl:
-            # Construct the final filename for THIS batch index
             fname = (f"batch_{bidx:06d}.pt"
                     if not args.prefix_rank_in_filenames
                     else f"rank{rank}_batch_{bidx:06d}.pt")
             out_path = save_dir / fname
 
-            # ---------------- RESUME CHECK (paranoid but robust) ----------------
             if args.resume and out_path.exists():
                 try:
                     data = torch.load(out_path, map_location="cpu")
@@ -724,53 +664,42 @@ def main():
                     if ok:
                         hs = data["hidden_states"]
                         if torch.is_tensor(hs):
-                            # New format: [B, T, H]; ensure T matches ctx_len
                             ok = (hs.ndim == 3 and hs.shape[1] == args.ctx_len)
                         elif isinstance(hs, list):
-                            # Legacy format: list of [T_i, H] tensors
                             ok = all(torch.is_tensor(t) and t.ndim == 2 for t in hs)
                     if ok:
-                        # Already good — skip compute
                         if rank == 0 and (bidx % 500 == 0):
                             print(f"[resume] split={name} rank={rank} skipping {out_path.name}")
                         bidx += 1
                         del data
                         continue
                 except Exception:
-                    pass  # corrupt/incompatible file → recompute
-                # Remove bad file so we can rewrite it
+                    pass
                 try: out_path.unlink()
                 except FileNotFoundError: pass
-            # --------------------------------------------------------------------
 
-            # Compute activations for this batch (unchanged)
             acts_bth = extract_layer_hidden_states(
                 model, batch, layer_index=args.layer_index, dtype=torch_dtype, device=device,
                 normalize=bool(args.normalize)
-            )  # [B, T, H] on CPU
+            )
 
             payload = {
-                "hidden_states": acts_bth,                    # [B, T, H] CPU
-                "input_ids": batch["input_ids"],              # [B, T] long CPU
-                "attention_mask": batch["attention_mask"],    # [B, T] long CPU (kept long; you can cast to bool later)
+                "hidden_states": acts_bth,
+                "input_ids": batch["input_ids"],
+                "attention_mask": batch["attention_mask"],
                 "global_row_index": batch["global_row_index"],
                 "window_index": batch["window_index"],
                 "token_start": batch["token_start"],
                 "token_end": batch["token_end"],
             }
             
-            # Add optional metadata fields
             if args.save_char_offsets and "char_offsets" in batch:
-                payload["char_offsets"] = batch["char_offsets"]  # List[List[Tuple[int,int]]] per batch
+                payload["char_offsets"] = batch["char_offsets"]
             
             if args.save_doc_id:
-                # Use actual doc_id from CSV column (propagated through dataset/collate)
-                payload["doc_id"] = batch["doc_id"]  # Already contains actual note_ids
+                payload["doc_id"] = batch["doc_id"]
             
             if args.save_section:
-                # Try to extract section from CSV if available
-                # For now, we'll need to add this during dataset construction
-                # Placeholder: can be populated from CSV column "section" if it exists
                 section_values = []
                 for global_idx in batch["global_row_index"].tolist():
                     if hasattr(df, "iloc") and "section" in df.columns:
@@ -790,7 +719,6 @@ def main():
         if rank == 0:
             print(f"[Info] split={name}: rank {rank} wrote {bidx} batch files to {save_dir}")
 
-    # ---------------- Run ----------------
     try:
         run_split("train", train_idx_local)
         if n_val > 0:

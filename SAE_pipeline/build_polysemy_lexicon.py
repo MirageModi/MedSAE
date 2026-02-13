@@ -8,7 +8,6 @@ with domain-specific regex rules for context detection.
 """
 
 import argparse
-import csv
 import json
 import re
 from pathlib import Path
@@ -16,12 +15,7 @@ from typing import List, Dict, Optional
 import pandas as pd
 
 
-# Default seed lexicon for common medical polysemous terms
-# Note: Matching is done on individual token lemmas (lowercased, stripped)
-# MedGemma uses SentencePiece/BPE tokenization, so terms may be split into subwords
-# The matching logic handles partial matches, so include full terms and common subword pieces
 SEED_LEXICON = [
-    # Regurgitation: cardiac vs GI
     {
         "term": "regurgitation",
         "sense": "cardiac",
@@ -34,7 +28,6 @@ SEED_LEXICON = [
         "domain_regexes": r"(esophag(eal|us)|GERD|reflux|gastric|hematemesis)",
         "exclude_regexes": r"(mitral|aortic|valv|tricuspid)",
     },
-    # Shock: cardiovascular vs neurological
     {
         "term": "shock",
         "sense": "cardiovascular",
@@ -47,7 +40,6 @@ SEED_LEXICON = [
         "domain_regexes": r"(spinal|neurogenic)",
         "exclude_regexes": r"(cardiogenic|septic|hypovolemic)",
     },
-    # Block: cardiac vs neurological
     {
         "term": "block",
         "sense": "cardiac",
@@ -60,7 +52,6 @@ SEED_LEXICON = [
         "domain_regexes": r"(nerve|spinal|epidural|anesthesia|sympathetic)",
         "exclude_regexes": r"(AV|atrioventricular|bundle|branch|conduction)",
     },
-    # Mass: radiological vs anatomical
     {
         "term": "mass",
         "sense": "radiological",
@@ -73,7 +64,6 @@ SEED_LEXICON = [
         "domain_regexes": r"(muscle|muscular|body|tissue|lean|soft)",
         "exclude_regexes": r"(CT|MRI|imaging|tumor|lesion|scan)",
     },
-    # Discharge: patient discharge vs bodily discharge
     {
         "term": "discharge",
         "sense": "administrative",
@@ -86,7 +76,6 @@ SEED_LEXICON = [
         "domain_regexes": r"(wound|drainage|purulent|vaginal|penile|urethral|nipple|exudate)",
         "exclude_regexes": r"(home|hospital|facility|plan|date|disposition)",
     },
-    # Arrest: cardiac arrest vs respiratory arrest
     {
         "term": "arrest",
         "sense": "cardiac",
@@ -99,7 +88,6 @@ SEED_LEXICON = [
         "domain_regexes": r"(respiratory|breathing|ventilation|apnea|respiratory)",
         "exclude_regexes": r"(cardiac|heart|CPR|defibrillat)",
     },
-    # Attack: heart attack vs asthma attack
     {
         "term": "attack",
         "sense": "cardiac",
@@ -112,7 +100,6 @@ SEED_LEXICON = [
         "domain_regexes": r"(asthma|bronchospasm|wheezing|respiratory|dyspnea)",
         "exclude_regexes": r"(heart|myocardial|MI|infarct|coronary)",
     },
-    # Episode: seizure episode vs cardiac episode
     {
         "term": "episode",
         "sense": "neurological",
@@ -125,7 +112,6 @@ SEED_LEXICON = [
         "domain_regexes": r"(cardiac|arrhythmia|chest pain|MI|palpitation)",
         "exclude_regexes": r"(seizure|convulsion|epileptic|syncope)",
     },
-    # Syndrome: various medical syndromes
     {
         "term": "syndrome",
         "sense": "cardiac",
@@ -138,7 +124,6 @@ SEED_LEXICON = [
         "domain_regexes": r"(respiratory|distress|ARDS|acute respiratory|breathing)",
         "exclude_regexes": r"(cardiac|coronary|metabolic|renal)",
     },
-    # Lesion: skin lesion vs brain lesion
     {
         "term": "lesion",
         "sense": "dermatological",
@@ -151,7 +136,6 @@ SEED_LEXICON = [
         "domain_regexes": r"(brain|cerebral|CNS|neurological|MRI brain|CT head)",
         "exclude_regexes": r"(skin|cutaneous|dermat|rash)",
     },
-    # Effusion: pleural effusion vs joint effusion
     {
         "term": "effusion",
         "sense": "respiratory",
@@ -164,7 +148,6 @@ SEED_LEXICON = [
         "domain_regexes": r"(joint|knee|shoulder|synovial|arthrocentesis|arthritic)",
         "exclude_regexes": r"(pleural|lung|chest|thoracic)",
     },
-    # Infiltrate: pulmonary infiltrate vs cellular infiltrate
     {
         "term": "infiltrate",
         "sense": "respiratory",
@@ -177,7 +160,6 @@ SEED_LEXICON = [
         "domain_regexes": r"(cellular|tissue|biopsy|pathology|histology)",
         "exclude_regexes": r"(pulmonary|lung|chest|X-ray|CXR)",
     },
-    # Pressure: blood pressure vs intracranial pressure
     {
         "term": "pressure",
         "sense": "cardiovascular",
@@ -190,7 +172,6 @@ SEED_LEXICON = [
         "domain_regexes": r"(intracranial|ICP|brain|CSF|cranial|ventricular)",
         "exclude_regexes": r"(blood|BP|hypertension|hypotension)",
     },
-    # Failure: heart failure vs renal failure
     {
         "term": "failure",
         "sense": "cardiac",
@@ -203,7 +184,6 @@ SEED_LEXICON = [
         "domain_regexes": r"(renal|kidney|AKI|dialysis|creatinine|BUN|nephro)",
         "exclude_regexes": r"(heart|cardiac|CHF|congestive)",
     },
-    # Insufficiency: renal insufficiency vs adrenal insufficiency
     {
         "term": "insufficiency",
         "sense": "renal",
@@ -228,41 +208,10 @@ def expand_lexicon_from_ner(
     """
     Expand lexicon using co-occurring disease entities from NER.
     
-    For each term in base_lexicon, find contexts where it co-occurs with
-    disease entities and use those to refine sense definitions.
+    Currently returns the base lexicon unchanged. Future implementation will
+    analyze co-occurrence patterns to refine sense definitions.
     """
-    expanded = base_lexicon.copy()
-    
-    try:
-        if aligned_spans_path and Path(aligned_spans_path).exists():
-            # Use aligned spans if available
-            df_aligned = pd.read_csv(aligned_spans_path)
-            # Group by term and sense, count co-occurring entities
-            # (implementation depends on your NER output format)
-            pass
-        elif ner_spans_path and Path(ner_spans_path).exists():
-            # Use raw NER spans
-            if ner_spans_path.endswith(".csv"):
-                df_ner = pd.read_csv(ner_spans_path)
-            elif ner_spans_path.endswith(".json") or ner_spans_path.endswith(".jsonl"):
-                with open(ner_spans_path) as f:
-                    if ner_spans_path.endswith(".jsonl"):
-                        ner_data = [json.loads(line) for line in f if line.strip()]
-                    else:
-                        ner_data = json.load(f)
-                df_ner = pd.DataFrame(ner_data)
-            else:
-                df_ner = None
-            
-            if df_ner is not None and not df_ner.empty:
-                # Extract co-occurrence patterns
-                # (This is a placeholder; actual implementation would analyze
-                # document-level co-occurrence of terms with disease entities)
-                pass
-    except Exception as e:
-        print(f"Warning: Could not expand lexicon from NER: {e}")
-    
-    return expanded
+    return base_lexicon.copy()
 
 
 def detect_sense_from_context(
@@ -286,15 +235,11 @@ def detect_sense_from_context(
         domain_regex = entry.get("domain_regexes", "")
         exclude_regex = entry.get("exclude_regexes", "")
         
-        # Check exclusion first
-        if exclude_regex:
-            if re.search(exclude_regex, context_text, flags):
-                continue
+        if exclude_regex and re.search(exclude_regex, context_text, flags):
+            continue
         
-        # Check domain match
-        if domain_regex:
-            if re.search(domain_regex, context_text, flags):
-                return entry["sense"]
+        if domain_regex and re.search(domain_regex, context_text, flags):
+            return entry["sense"]
     
     return None
 
@@ -321,24 +266,17 @@ def label_occurrences_from_sections(
     for idx, row in df.iterrows():
         text = str(row[text_column])
         section = str(row.get(section_column, "")) if section_column else ""
-        
-        # Combine section and text for context
         context = f"{section} {text}".strip()
         
-        # Search for each term
         for term in terms:
-            # Simple word boundary search (can be enhanced with regex)
             pattern = rf"\b{re.escape(term)}\b"
             matches = list(re.finditer(pattern, text, re.IGNORECASE))
             
             for match in matches:
                 start, end = match.span()
-                # Get surrounding context (100 chars before/after)
                 ctx_start = max(0, start - 100)
                 ctx_end = min(len(text), end + 100)
                 context_snippet = text[ctx_start:ctx_end]
-                
-                # Detect sense
                 sense = detect_sense_from_context(term, context_snippet, lexicon)
                 
                 if sense:
@@ -399,7 +337,6 @@ def main():
     
     args = parser.parse_args()
     
-    # Build lexicon
     if args.seed_only:
         lexicon = SEED_LEXICON
     else:
@@ -409,7 +346,6 @@ def main():
             args.aligned_spans if args.aligned_spans else ""
         )
     
-    # Save lexicon
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     
@@ -424,14 +360,12 @@ def main():
             else:
                 json.dump(lexicon, f, indent=2)
     else:
-        # Default to CSV
         df = pd.DataFrame(lexicon)
         df.to_csv(f"{output_path}.csv", index=False)
         output_path = Path(f"{output_path}.csv")
     
     print(f"Saved lexicon with {len(lexicon)} entries to {output_path}")
     
-    # Optionally label occurrences
     if args.label_occurrences and args.csv_path:
         occurrences_path = str(output_path).replace(".csv", "_occurrences.csv").replace(".json", "_occurrences.csv")
         label_occurrences_from_sections(

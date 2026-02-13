@@ -100,10 +100,6 @@ class CharOffsetComputer:
         
         return offsets
 
-# ---------------------------
-# SpanCache
-# ---------------------------
-
 class SpanCache:
     def __init__(self, tokenizer):
         self.tokenizer = tokenizer
@@ -219,10 +215,6 @@ def export_topk_latents_csv(
 ):
     """
     Export Top-K latent IDs and values per token to CSV.
-    
-    Args:
-        global_batch_offset: The starting global batch index for this data shard.
-                            Ensures batch_idx in CSV matches actual batch files.
     """
     k_main = cfg_in_ckpt.get("k", 128)
     relu_after_topk = cfg_in_ckpt.get("relu_after_topk", True)
@@ -246,14 +238,12 @@ def export_topk_latents_csv(
     
     Path(export_path).parent.mkdir(parents=True, exist_ok=True)
     
-    # Initialize offset computer for on-the-fly computation
     offset_computer = CharOffsetComputer(tokenizer) if with_offsets else None
     
     rows = []
     pbar = tqdm(total=len(all_val_data), desc="[TopK Export] Processing batches", unit="batch", leave=False)
     
     for local_idx, val_batch in enumerate(all_val_data):
-        # CRITICAL FIX: Use global batch_idx
         global_batch_idx = global_batch_offset + local_idx
         
         acts = val_batch['acts'].to(device=device, dtype=dtype)
@@ -262,26 +252,21 @@ def export_topk_latents_csv(
         input_ids_batch = val_batch.get('input_ids', [])
         doc_ids = val_batch.get('doc_id', None)
         
-        # Handle input_ids format (tensor or list)
         if isinstance(input_ids_batch, torch.Tensor):
             input_ids_list = input_ids_batch.tolist()
         else:
             input_ids_list = list(input_ids_batch) if input_ids_batch is not None else []
         
-        # Decode texts if not provided
         if not texts and input_ids_list:
             texts = [tokenizer.decode(ids, skip_special_tokens=True) for ids in input_ids_list]
         
-        # Get char_offsets from batch
         char_offsets_batch = val_batch.get('char_offsets', None)
         
-        # Check if char_offsets are all zeros (placeholder from activation gen)
         needs_recompute = False
         if with_offsets:
             if char_offsets_batch is None:
                 needs_recompute = True
             else:
-                # Check if all zeros
                 all_zeros = True
                 for co_list in char_offsets_batch:
                     if co_list:
@@ -294,7 +279,6 @@ def export_topk_latents_csv(
                 if all_zeros:
                     needs_recompute = True
         
-        # Compute char_offsets on-the-fly if needed
         if needs_recompute and offset_computer is not None:
             char_offsets_batch = []
             B = len(input_ids_list)
@@ -304,7 +288,6 @@ def export_topk_latents_csv(
                 offsets_b = offset_computer.compute_offsets(text_b, ids_b)
                 char_offsets_batch.append(offsets_b)
         
-        # Compute SAE activations
         pre = torch.einsum("btd,nd->btn", acts, W_enc) + b_enc
         k_eff = min(int(k_main), pre.shape[-1])
         topk_vals, topk_idx = torch.topk(pre, k=k_eff, dim=-1)
@@ -316,7 +299,6 @@ def export_topk_latents_csv(
         B, T = acts.shape[:2]
         
         for b in range(B):
-            # Get doc_id from batch (this is the CORRECT doc_id from activation files)
             doc_id = None
             if doc_ids is not None:
                 if isinstance(doc_ids, torch.Tensor):
@@ -339,7 +321,6 @@ def export_topk_latents_csv(
                 token_str = tokenizer.decode([token_id], skip_special_tokens=False)
                 lemma = token_str.lower().strip().rstrip(".,;:!?")
                 
-                # Filter by target terms
                 if target_lemmas:
                     matched = False
                     if lemma in target_lemmas:
@@ -362,7 +343,7 @@ def export_topk_latents_csv(
                     "token_str": token_str,
                     "lemma": lemma,
                     "position": t,
-                    "batch_idx": global_batch_idx,  # FIXED: Use global index
+                    "batch_idx": global_batch_idx,
                     "token_id": token_id,
                     "K": k_eff,
                     "latent_ids_json": json.dumps(t_ids),
@@ -374,7 +355,6 @@ def export_topk_latents_csv(
                     z_norm = [(v/s if s > 0 else 0.0) for v, s in zip(t_vals, scales)]
                     row["z_values_norm_json"] = json.dumps([max(0.0, min(1.0, z)) for z in z_norm])
                 
-                # Add char offsets
                 if with_offsets:
                     if char_offsets_b and t < len(char_offsets_b):
                         char_start, char_end = char_offsets_b[t]
@@ -418,10 +398,6 @@ def export_topk_latents_csv(
     else:
         print(f"Warning: No rows exported (filter may be too restrictive)")
 
-# ---------------------------
-# Utilities
-# ---------------------------
-
 def setup_logging(shard_id: int, total_shards: int):
     """Setup logging with shard identification"""
     log_format = f"[Shard {shard_id}/{total_shards}] %(levelname)s: %(message)s"
@@ -462,7 +438,6 @@ def l2_normalize_per_token(x: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
     return (x_f / denom).to(orig_dtype)
 
 def center_unit_norm(x: torch.Tensor, mask_bt: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
-    # Explicit float32 cast for safety during normalization
     orig_dtype = x.dtype
     x_f = x.float()
     x_f = x_f - x_f.mean(dim=-1, keepdim=True)
@@ -491,7 +466,6 @@ def route_inputs_for_hf(model, ids, att):
     """
     target_dev = None
     
-    # 1. Try to locate the embedding layer's device
     try:
         if hasattr(model, "model") and hasattr(model.model, "embed_tokens"):
             target_dev = model.model.embed_tokens.weight.device
@@ -500,7 +474,6 @@ def route_inputs_for_hf(model, ids, att):
     except Exception:
         pass
 
-    # 2. Fallback: Check the first parameter
     if target_dev is None:
         try:
             target_dev = next(model.parameters()).device
@@ -531,10 +504,6 @@ def _get_state_tensor(state_dict, name: str):
         if key in state_dict:
             return state_dict[key]
     return None
-
-# ---------------------------
-# LLM Wiring & Capture
-# ---------------------------
 
 def _find_decoder_layers_module(model):
     candidates = ["model.layers", "model.decoder.layers", "transformer.h", "transformer.layers", "layers"]
@@ -824,9 +793,6 @@ def _iter_batches_for_delta_ce(args, llm, val_loader, acts_root, acts_split, act
             if acts.numel() == 0: continue
             yield {"input_ids": ids, "attention_mask": attn.long(), "acts": acts, "mask_bt": mask_bt_re}
 
-# ---------------------------
-# Residual Swap Class
-# ---------------------------
 class ResidualSwap:
     def __init__(self, model, layer_index, new_resid, mask=None):
         self.model = model
@@ -844,10 +810,8 @@ class ResidualSwap:
         Bx, Tx, H = x.shape
         new_resid_contig = self.new_resid.contiguous()
         
-        # Simple robustness check
         if new_resid_contig.dim() != 3 or new_resid_contig.shape[0] != Bx: return output
         
-        # Length matching
         T_new = new_resid_contig.shape[1]
         if T_new > Tx: resid_swapped = new_resid_contig[:, :Tx, :]
         elif T_new < Tx: 
@@ -857,11 +821,9 @@ class ResidualSwap:
         
         resid_swapped = resid_swapped.to(x.device, dtype=x.dtype)
         
-        # Masking
         if self.mask is not None:
             m = self.mask.to(x.device).bool()
             if m.ndim == 2: m = m.unsqueeze(-1)
-            # Ensure mask length matches
             if m.shape[1] > Tx: m = m[:, :Tx, :]
             elif m.shape[1] < Tx: 
                  pad = torch.zeros(Bx, Tx-m.shape[1], 1, device=x.device, dtype=torch.bool)
@@ -886,20 +848,18 @@ class ResidualSwap:
 def delta_ce_for_batch(model, sae_W_enc, sae_b_enc, sae_W_dec, sae_b_dec,
                        acts_bth, mask_bt, input_ids, alpha=1.0,
                        k_main=128, device=None, layer_index=None):
-    if device is None: device = next(model.parameters()).device
+    if device is None:     device = next(model.parameters()).device
     dtype = next(model.parameters()).dtype
     
     ids = input_ids.to(device)
     attn = mask_bt.to(device).long()
     m_bt_full = (attn > 0).bool()
     
-    # 1. Base Forward
     ids_base, attn_base = route_inputs_for_hf(model, ids, attn)
     out_base = model(input_ids=ids_base, attention_mask=attn_base, use_cache=False)
     logits_base = out_base.logits
     ce_base = _loss_shifted_ce(logits_base, ids, attn[:, 1:] > 0)
     
-    # 2. SAE Reconstruct (in RAW space)
     x_raw = acts_bth.to(device, dtype=dtype)
     mu = x_raw.mean(dim=-1, keepdim=True)
     centered = x_raw - mu
@@ -918,7 +878,6 @@ def delta_ce_for_batch(model, sae_W_enc, sae_b_enc, sae_W_dec, sae_b_dec,
     xh_raw = xh_norm * sigma + mu
     x_mix = (1.0 - float(alpha)) * x_raw + float(alpha) * xh_raw
     
-    # 3. Swapped Forward
     layers = _find_decoder_layers_module(model)
     target_dev = module_device(layers[layer_index])
     x_mix_target = x_mix.to(target_dev, non_blocking=True)
@@ -969,21 +928,16 @@ def collate_saved_batches(batches):
         "input_ids": torch.cat([b["input_ids"] for b in batches], dim=0),
     }
     
-    # --- FIX: Preserve Metadata ---
     if len(batches) > 0:
-        # Preserve doc_id
         if "doc_id" in batches[0] and batches[0]["doc_id"] is not None:
-            # If it's a tensor, cat it; if list, extend it
             val = batches[0]["doc_id"]
             if isinstance(val, torch.Tensor):
                 out["doc_id"] = torch.cat([b["doc_id"] for b in batches], dim=0)
             elif isinstance(val, list):
                 out["doc_id"] = [item for b in batches for item in b["doc_id"]]
         
-        # Preserve char_offsets
         if "char_offsets" in batches[0] and batches[0]["char_offsets"] is not None:
             out["char_offsets"] = [item for b in batches for item in b["char_offsets"]]
-    # ------------------------------
     
     return out
 
@@ -1005,9 +959,6 @@ def _load_token_labels_npz(labels_path, batch_files):
         labels.append(torch.from_numpy(data[key]).float())
     return labels
 
-# ---------------------------
-# Datasets
-# ---------------------------
 class LineTextDataset(torch.utils.data.Dataset):
     def __init__(self, path: str):
         self.samples = []
@@ -1076,12 +1027,8 @@ def collate_to_token_windows(batch_texts, tokenizer, ctx_len, stride):
         return {"input_ids": torch.empty(0, dtype=torch.long), "attention_mask": torch.empty(0, dtype=torch.long)}
     return {"input_ids": torch.tensor(ids_all, dtype=torch.long), "attention_mask": torch.tensor(attn_all, dtype=torch.long)}
 
-# ---------------------------
-# Corpus Reps (Fair Probe)
-# ---------------------------
 @torch.no_grad()
 def build_corpus_token_reps(all_val_data, vocab_size, sae_device, llm, layer_index, max_per_token, micro_bsz, dtype, normalized):
-    # Accumulate in float32 to prevent overflow/precision loss
     sums = torch.zeros((vocab_size, all_val_data[0]["acts"].shape[-1]), device=sae_device, dtype=torch.float32)
     counts = torch.zeros((vocab_size,), device=sae_device, dtype=torch.int32)
     
@@ -1094,11 +1041,9 @@ def build_corpus_token_reps(all_val_data, vocab_size, sae_device, llm, layer_ind
         
         if use_raw_recompute:
             llm_dev, llm_dt = _get_llm_device_and_dtype(llm)
-            # Recompute acts in model dtype (bf16), then move to sae_device
             acts_raw, _ = llm_acts_in_chunks(llm, ids.to(llm_dev), mask.to(llm_dev).long(), layer_index, False, micro_bsz, sae_device, dtype)
             acts = acts_raw
         else:
-            # Cast to dtype (bf16) if not already
             acts = vb["acts"].to(sae_device, dtype=dtype)
             
         B, T = acts.shape[:2]
@@ -1110,7 +1055,6 @@ def build_corpus_token_reps(all_val_data, vocab_size, sae_device, llm, layer_ind
                 if mask[b, t]:
                     tid = int(ids[b, t])
                     if tid < vocab_size and counts[tid] < max_per_token:
-                        # Accumulate in float32
                         sums[tid] += acts[b, t].float()
                         counts[tid] += 1
         
@@ -1127,10 +1071,6 @@ def build_corpus_token_reps(all_val_data, vocab_size, sae_device, llm, layer_ind
         reps[valid] = centered / norms
         
     return reps, valid
-
-# ---------------------------
-# Probe & Metrics
-# ---------------------------
 
 @torch.no_grad()
 def _metrics_from_scores(scores: torch.Tensor, labels: torch.Tensor) -> Tuple[float, float]:
@@ -1203,14 +1143,9 @@ def run_single_latent_probes(
     if device is None: device = all_val_data[0]["acts"].device
     torch.manual_seed(seed)
     
-    # 1. Select Latents
     W_enc_full = W_enc_cpu.to(device)
     b_enc_full = b_enc_cpu.to(device)
     
-    # Use correlation_chunk for global correlation computation (processes ALL latents)
-    # This is necessary because correlation ranking needs to see all latents globally
-    # The correlation computation will process all latents in chunks of correlation_chunk size
-    # If not provided, fall back to feature_chunk
     corr_chunk = correlation_chunk if correlation_chunk is not None else feature_chunk
     
     print("[probes] Selecting latents by correlation (Global)...")
@@ -1218,8 +1153,6 @@ def run_single_latent_probes(
         all_val_data, labels_by_batch, W_enc_full, b_enc_full, use_pre, corr_chunk, max_latents
     )
     
-    # Filter selected latents to only those in this shard's range
-    # Example: If shard range is 0-20000, only process latents in that range
     if shard_range:
         s_start, s_end = shard_range
         selected_latents = [idx for idx in selected_latents_all if s_start <= idx < s_end]
@@ -1255,12 +1188,10 @@ def run_single_latent_probes(
             end = min(start + feature_chunk, len(selected_latents))
             chunk_ids = selected_latents[start:end]
             
-            # RESUME LOGIC: Skip if all latents in this chunk are already in CSV
             if all(lat_id in existing_latent_ids for lat_id in chunk_ids):
                 chunk_pbar.update(1)
                 continue
 
-            # Prepare Chunk
             idx_tensor = torch.tensor(chunk_ids, device=device, dtype=torch.long)
             W_chunk = W_enc_full.index_select(0, idx_tensor)
             b_chunk = b_enc_full.index_select(0, idx_tensor)
@@ -1269,7 +1200,6 @@ def run_single_latent_probes(
             b_probe = nn.Parameter(torch.zeros(len(chunk_ids), device=device, requires_grad=True))
             optimizer = torch.optim.Adam([w_probe, b_probe], lr=lr)
             
-            # --- TRAINING (Mini-Batch) ---
             n_epochs = max(1, int(max_steps))
             train_pbar = tqdm(total=len(all_val_data) * n_epochs, desc="Training", unit="batch", leave=False, position=1)
             
@@ -1303,13 +1233,13 @@ def run_single_latent_probes(
             
             w_eval = w_probe.detach()
             b_eval = b_probe.detach()
-            eval_sub_bsz = 1024 
+            eval_sub_bsz = 1024
             
             total_val_samples = 0
             for vb, lbl in zip(all_val_data, labels_by_batch):
-                mask = vb["mask_bt"] # [B, T]
+                mask = vb["mask_bt"]
                 total_val_samples += mask.sum().item()
-            total_eval_samples = int(total_val_samples / val_stride) + len(all_val_data) * 2 # Buffer
+            total_eval_samples = int(total_val_samples / val_stride) + len(all_val_data) * 2
             
             eval_pbar = tqdm(total=len(chunk_ids), desc="Evaluating Latents", unit="latents", leave=False, position=1)
             
@@ -1353,10 +1283,8 @@ def run_single_latent_probes(
                         ce_sum += ce_loss.sum(dim=0)
                         ce_count += ce_loss.shape[0]
                         
-                        # Store block (CPU Copy)
                         n_batch = z_val.shape[0]
                         if ptr + n_batch > total_eval_samples:
-                            # Resize if buffer too small (rare)
                             new_size = ptr + n_batch + 10000
                             all_logits.resize_(new_size, n_sub)
                             all_labels.resize_(new_size)
@@ -1366,9 +1294,7 @@ def run_single_latent_probes(
                         all_labels[ptr : ptr+n_batch] = y_val.float().cpu()
                         ptr += n_batch
                 
-                # Compute Metrics
                 if ptr > 0:
-                    # Truncate to actual size
                     flat_logits_all = all_logits[:ptr]
                     flat_labels = all_labels[:ptr]
                     
@@ -1416,25 +1342,20 @@ def export_sae_for_viewer_sharded(
     else:
         s_start, s_end = 0, n_latents
 
-    feature_ids = list(range(s_start, s_end)) 
+    feature_ids = list(range(s_start, s_end))
     token_heaps = {i:[] for i in feature_ids}
     neighbor_heaps = {i:[] for i in feature_ids}
     example_heaps = {i:[] for i in feature_ids}
 
-    # Prepare specific shard for calc
     W_dec_shard = W_dec_cpu[:, s_start:s_end]
     if feature_scale_cpu is not None:
         dec_viz = W_dec_shard * feature_scale_cpu[s_start:s_end].unsqueeze(0)
     else:
         dec_viz = W_dec_shard
     
-    # Unit Norm for Cosine Sim - Normalize on CPU in float32
     W_dec_unit_shard = dec_viz / dec_viz.norm(p=2, dim=0, keepdim=True).clamp_min(1e-8)
-    # Move to device in BF16 for speed (sae_dtype)
     W_dec_unit_shard = W_dec_unit_shard.to(device=sae_device, dtype=sae_dtype)
 
-    # 1. Top Tokens
-    # Input/Corpus Probes use W_dec to find what tokens activate the latent
     if args.token_probe == "input":
         if llm is None: raise RuntimeError("LLM model required for 'input' probe.")
         emb_gpu = F.normalize(llm.get_input_embeddings().weight.detach().float(), p=2, dim=1).to(device=sae_device, dtype=sae_dtype)
@@ -1443,14 +1364,12 @@ def export_sae_for_viewer_sharded(
             s, i = torch.topk(sim[:, j], k=args.top_tokens_k)
             for score, idx in zip(s.tolist(), i.tolist()): 
                 _update_heap_maxk(token_heaps[fid], args.top_tokens_k, score, int(idx))
-        del emb_gpu, sim
+            del emb_gpu, sim
         
     elif args.token_probe == "corpus":
-        # Requires corpus reps (Fair Probe)
         corpus_reps = None
         if precomputed_corpus_reps:
             corpus_reps, token_valid = precomputed_corpus_reps
-            # Corpus reps are float32 accumulator, cast to BF16 for matmul
             corpus_reps = corpus_reps.to(device=sae_device, dtype=sae_dtype)
             token_valid = token_valid.to(sae_device)
         
@@ -1464,10 +1383,8 @@ def export_sae_for_viewer_sharded(
                         _update_heap_maxk(token_heaps[fid], args.top_tokens_k, score, int(valid_ids[loc_idx]))
             del corpus_reps, token_valid
 
-    # 2. Neighbors (Feature-Feature Cosine)
     if args.neighbors_k and args.neighbors_k > 0:
         print(f"[Viewer] Computing neighbors for shard {s_start}-{s_end}...")
-        # Query: [Shard_Size, d_model] in BF16
         query = W_dec_unit_shard.t()
         
         n_search = n_latents
@@ -1475,7 +1392,6 @@ def export_sae_for_viewer_sharded(
             n_search = min(n_latents, args.neighbors_max_search_range)
             print(f"  Limiting neighbor search to first {n_search} latents.")
 
-        # Stream ALL W_dec in chunks to save VRAM.
         chunk_size_inner = 8192
         W_dec_all_unit_cpu = W_dec_cpu[:, :n_search] / W_dec_cpu[:, :n_search].norm(p=2, dim=0, keepdim=True).clamp_min(1e-8) # Re-normalize full on CPU
         
@@ -1485,10 +1401,8 @@ def export_sae_for_viewer_sharded(
             f_start_inner = j_inner
             f_end_inner = min(j_inner + chunk_size_inner, n_search)
             
-            # Load target chunk to GPU: [d, Inner_Size] in BF16
             W_target_chunk = W_dec_all_unit_cpu[:, f_start_inner:f_end_inner].to(device=sae_device, dtype=sae_dtype)
             
-            # Sim: [Shard_Size, Inner_Size]
             sims = query @ W_target_chunk
             
             for row_idx in range(sims.shape[0]):
@@ -1506,7 +1420,6 @@ def export_sae_for_viewer_sharded(
         del query, W_dec_all_unit_cpu
         if torch.cuda.is_available(): torch.cuda.empty_cache()
 
-    # 3. Examples (Max Activating)
     print(f"[Viewer] Mining examples for shard {s_start}-{s_end}...")
     W_enc_cpu = sae_state_dict['W_enc'].float().cpu()
     b_enc_cpu = sae_state_dict.get('b_enc', torch.zeros(n_latents)).float().cpu()
@@ -1529,15 +1442,12 @@ def export_sae_for_viewer_sharded(
         z_masked = z * mask.unsqueeze(-1)
         
         for b in range(acts.shape[0]):
-            # Max activation for each latent in the batch
             vals, idxs = torch.max(z_masked[b], dim=0)
             
-            # Check against heaps
             for j, fid in enumerate(feature_ids):
                 score = float(vals[j])
-                if score < 1e-6: continue # Tiny activation filter
+                if score < 1e-6: continue
                 
-                # Check heap min before doing heavy reconstruction work
                 if len(example_heaps[fid]) >= args.top_examples_k:
                     if score <= example_heaps[fid][0][0]:
                         continue
@@ -1545,7 +1455,6 @@ def export_sae_for_viewer_sharded(
                 z_line = z_masked[b, :, j]
                 z_norm = (z_line / scale_shard[j]).clamp(0,1) if scale_shard is not None else z_line
                 
-                # These are CPU ops
                 acts_disp = sanitize_scores_list(sc.aggregate_acts_to_display(b, z_line))
                 acts_norm = sanitize_scores_list(sc.aggregate_acts_to_display(b, z_norm)) if scale_shard is not None else None
                 peak_disp = None
@@ -1570,10 +1479,9 @@ def export_sae_for_viewer_sharded(
                     "tokenScores": acts_disp, 
                     "display_peak_token_index": peak_disp
                 }
-                if acts_norm: payload["tokenScoresNormalized"] = acts_norm               
+                if acts_norm: payload["tokenScoresNormalized"] = acts_norm
                 
                 ex_ctr += 1
-                # Use negative counter as tie-breaker for deterministic heaps
                 _update_heap_maxk(example_heaps[fid], args.top_examples_k, score, payload, unique_id=-ex_ctr)
         
         pbar.update(1)
@@ -1686,12 +1594,10 @@ def main():
 
     logger.info(f"Initializing on {sae_device} (Step 3d: Viewer/Probes/TopK Export)")
 
-    # Load Tokenizer (Always needed)
     logger.info("Loading tokenizer...")
     tok = get_tokenizer_only(args.model_id, args.ctx_len)
     logger.info("Tokenizer loaded")
 
-    # Determine Normalization Status & Data Loading
     logger.info("Loading validation data...")
     all_val_data = []
     saved_ds = None
@@ -1699,18 +1605,16 @@ def main():
     val_loader = None
 
     if args.use_saved_acts:
-        # Check Metadata
         gen_meta = load_gen_meta(args.acts_root)
         if args.acts_normalized == "auto":
             if "normalize" in gen_meta:
                 saved_acts_are_normalized = gen_meta["normalize"]
             else:
-                saved_acts_are_normalized = None # Will detect later
+                saved_acts_are_normalized = None
         else:
             saved_acts_are_normalized = (args.acts_normalized == "yes")
             
         saved_ds = SavedActsBatches(args.acts_root, split=args.acts_split, max_files=args.acts_max_files, preload=args.preload)
-        # Use simple loader to populate memory list
         loader = torch.utils.data.DataLoader(saved_ds, batch_size=1, shuffle=False, num_workers=4, collate_fn=collate_saved_batches)
         
         auto_probe_done = False
@@ -1722,27 +1626,21 @@ def main():
         for i, batch in enumerate(loader):
             va, vm, ids = batch["acts"].to(sae_dtype), batch["mask_bt"].bool(), batch["input_ids"]
             
-            # NaN Sanitization: Remove NaNs to prevent propagation and NaN loss
             if torch.is_floating_point(va):
                 nan_mask = torch.isnan(va).any(dim=-1)
                 if nan_mask.any():
-                    # Mask out tokens that have NaNs so they aren't used in metrics
                     vm = vm & (~nan_mask)
-                    # Zero out NaNs to prevent propagation in matrix mults
                     va = torch.nan_to_num(va, nan=0.0, posinf=0.0, neginf=0.0)
             
-            # Auto-detect normalization if missing metadata
             if saved_acts_are_normalized is None:
                 if not auto_probe_done:
                     saved_acts_are_normalized = looks_normalized(va, vm)
                     logger.info(f"Auto-detected normalization: {saved_acts_are_normalized}")
                     auto_probe_done = True
             
-            # Normalize if required
             if not saved_acts_are_normalized: 
                 va = center_unit_norm(va, vm)
             
-            # Keep on CPU until needed
             meta_payload = {
                 "acts": va.cpu(), 
                 "mask_bt": vm.cpu(), 
@@ -1757,20 +1655,17 @@ def main():
             if i+1 >= args.max_val_batches: break
         
         pbar.close()
-        if saved_acts_are_normalized is None: saved_acts_are_normalized = True # Fallback
+        if saved_acts_are_normalized is None: saved_acts_are_normalized = True
         logger.info(f"Loaded {len(all_val_data)} validation batches")
 
     else:
-        # Live generation via LLM (requires LLM load)
-        saved_acts_are_normalized = True # Live acts will be normalized by llm_acts_in_chunks
+        saved_acts_are_normalized = True
         requires_llm = True
 
-    # Check if LLM is required
     requires_llm = False
     if not args.use_saved_acts: requires_llm = True
     elif args.run_delta_ce and args.shard_id == 0: requires_llm = True
     elif args.token_probe in ["layer", "input"]: requires_llm = True
-    # If using corpus probe but saved acts are normalized, we need LLM to get raw acts for fair probe
     elif args.token_probe == "corpus" and saved_acts_are_normalized: requires_llm = True
     
     lm = None
@@ -1781,7 +1676,6 @@ def main():
     else:
         logger.info("Skipping LLM load (using saved activations / raw features only)")
 
-    # Load SAE
     logger.info(f"Loading SAE checkpoint: {args.ckpt_path}")
     ckpt = torch.load(args.ckpt_path, map_location="cpu")
     sae_state_dict = ckpt.get("model", ckpt.get("sae_state_dict", ckpt))
@@ -1791,9 +1685,6 @@ def main():
     total_latents = sae_state_dict["W_enc"].shape[0]
     logger.info(f"SAE loaded: {total_latents} latents, d_model={sae_state_dict['W_dec'].shape[0]}")
 
-    # ---------------------------
-    # Task 1: Delta CE (Shard 0 only)
-    # ---------------------------
     if args.run_delta_ce and args.shard_id == 0:
         logger.info("=" * 60)
         logger.info("Task 1: Delta CE (Shard 0 only)")
@@ -1816,7 +1707,6 @@ def main():
                     vb["acts"], vb["mask_bt"], vb["input_ids"],
                     alpha=args.alpha_swap, k_main=k_sys, device=sae_device, layer_index=args.layer_index
                 )
-                # res is now (delta_ce, kl, ce_base, ce_swap)
                 dce_stats.append({
                     "batch": i,
                     "delta_ce": res[0],
@@ -1837,7 +1727,6 @@ def main():
             logger.info(f"Delta CE completed: avg_dce={avg_dce:.6f}, avg_kl={avg_kl:.6f} ({len(dce_stats)} batches)")
             print(json.dumps({"metric": "delta_ce", "value": avg_dce, "kl": avg_kl}))
             
-            # Save metrics to JSON file
             metrics_output = {
                 "summary": {
                     "delta_ce": {
@@ -1866,18 +1755,13 @@ def main():
                 json.dump(metrics_output, f, indent=2)
             logger.info(f"[delta-ce] Metrics saved to: {metrics_path}")
         
-        # Cleanup large tensors
         del W_enc_full, W_dec_full, batch_iter
         gc.collect()
 
-    # ---------------------------
-    # Task 2: Top-K Export (DATA Sharded)
-    # ---------------------------
     if args.export_topk_latents_csv and not os.path.exists(args.export_topk_latents_csv):
         logger.info("=" * 60)
         logger.info("Task 2: Top-K Export (Data Sharded)")
         logger.info("=" * 60)
-        # Determine Data Shard
         total_batches = len(all_val_data)
         per_shard = int(math.ceil(total_batches / args.total_shards))
         d_start = args.shard_id * per_shard
@@ -1887,7 +1771,6 @@ def main():
             logger.info(f"Exporting Top-K CSV for data batches {d_start}-{d_end} (total: {total_batches})")
             data_subset = all_val_data[d_start:d_end]
             
-            # Load filters
             filter_terms = None
             if args.filter_terms_csv and os.path.exists(args.filter_terms_csv):
                 try:
@@ -1916,13 +1799,9 @@ def main():
         else:
             logger.info("Data shard empty for Top-K export.")
 
-    # ---------------------------
-    # Task 3: Viewer & Probes (FEATURE Sharded)
-    # ---------------------------
     limit_view = args.max_viewer_latents if args.max_viewer_latents > 0 else total_latents
     limit_probe = args.probe_max_latents if args.probe_max_latents > 0 else total_latents
     
-    # Determine probe_start_latent: check merged probes CSV if available
     probe_start_latent = args.probe_start_latent if args.probe_start_latent is not None else 0
     if args.run_probes and args.merged_probes_csv and os.path.exists(args.merged_probes_csv):
         try:
@@ -1939,7 +1818,6 @@ def main():
         except Exception as e:
             logger.warning(f"Could not read merged probes CSV {args.merged_probes_csv}: {e}. Starting from {probe_start_latent}")
     
-    # Calculate Latent Range for this shard (based on viewer limit, which is typically full range)
     target_latents = max(limit_view, limit_probe)
     target_latents = min(target_latents, total_latents)
     
@@ -1958,19 +1836,15 @@ def main():
         logger.info(f"Feature processing range: {s_start}-{s_end} (out of {target_latents} total)")
         logger.info(f"Dynamic feature_chunk: {dynamic_feature_chunk} (shard range: {shard_range_size}, configured: {args.feature_shard_size})")
         
-        # 3a. Probes
         if args.run_probes:
             p_start = max(probe_start_latent, s_start)
             p_end = min(s_end, limit_probe)
             
-            # Only run if there's a valid range and it's within the probe limit
             if p_start < p_end and p_start < limit_probe:
                 logger.info(f"Running probes for latents {p_start}-{p_end} ({p_end - p_start} latents)...")
                 W_enc_cpu = sae_state_dict['W_enc'].float()
                 b_enc_cpu = sae_state_dict.get('b_enc', torch.zeros(total_latents)).float()
                 
-                # Load labels (aligned with all_val_data)
-                # Only need labels if we have data
                 if all_val_data:
                     logger.info("Loading probe labels...")
                     labels = _load_token_labels_npz(args.labels_path, saved_ds.files[:len(all_val_data)])
@@ -1987,20 +1861,18 @@ def main():
                         max_latents=total_latents,
                         max_steps=args.probe_max_steps, device=sae_device, 
                         shard_range=(p_start, p_end),
-                        correlation_chunk=args.feature_shard_size  # Use configured size for global correlation computation
+                        correlation_chunk=args.feature_shard_size
                     )
                     logger.info(f"Probes completed: {probes_csv}")
             else:
-                if args.run_probes:
-                    logger.info(f"Skipping probes for shard {args.shard_id}: range {p_start}-{p_end} is invalid or already processed")
+                    if args.run_probes:
+                        logger.info(f"Skipping probes for shard {args.shard_id}: range {p_start}-{p_end} is invalid or already processed")
 
-        # 3b. Viewer
         if not os.path.exists(os.path.join(args.export_dir, f"viewer_pack.json")):
             v_end = min(s_end, limit_view)
             if s_start < v_end:
                 logger.info(f"Running viewer export for latents {s_start}-{v_end} ({v_end - s_start} latents)...")
                 
-                # Precompute Corpus Reps if needed (Shared by all latents in this shard)
                 corpus_reps_tuple = None
                 if args.token_probe == "corpus":
                     logger.info("Building corpus reps for viewer...")

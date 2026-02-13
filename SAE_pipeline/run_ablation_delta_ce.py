@@ -138,7 +138,6 @@ def compute_delta_ce_ablation(model, tokenizer, sae_state_dict, cfg_in_ckpt,
 
 def main():
     parser = argparse.ArgumentParser(description="Run context-matched ablation effects")
-    # ... (Keep arguments the same) ...
     parser.add_argument("--model_id", type=str, required=True)
     parser.add_argument("--ckpt_path", type=str, required=True)
     parser.add_argument("--layer_index", type=int, required=True)
@@ -146,7 +145,7 @@ def main():
     parser.add_argument("--topk_csv", type=str, required=True)
     parser.add_argument("--acts_root", type=str, required=True)
     parser.add_argument("--acts_split", type=str, default="val")
-    parser.add_argument("--acts_max_files", type=int, default=0) # Set to 0 in bash!
+    parser.add_argument("--acts_max_files", type=int, default=0)
     parser.add_argument("--output", type=str, required=True)
     parser.add_argument("--dtype", type=str, default="bfloat16")
     parser.add_argument("--max_ablations", type=int, default=100, 
@@ -159,29 +158,24 @@ def main():
     from sae_viewer_comparisons_fixed import str2dtype
     dtype = str2dtype(args.dtype)
     
-    # Load model and SAE
     print(f"Loading model {args.model_id} and SAE from {args.ckpt_path}...")
     model, tokenizer, sae_state_dict, cfg_in_ckpt = load_model_and_sae(
         args.model_id, args.ckpt_path, args.layer_index, dtype
     )
     device = next(model.parameters()).device
     
-    # Load sense-linked latents
     print(f"Loading sense-linked latents from {args.sense_linked_csv}...")
     df_sense_linked = pd.read_csv(args.sense_linked_csv)
     
-    # Sort by strength to test best candidates first per sense
     if "presence_rate_diff" in df_sense_linked.columns:
         df_sense_linked = df_sense_linked.sort_values("presence_rate_diff", ascending=False)
     
-    # Load Top-K latents
     print(f"Loading Top-K latents from {args.topk_csv}...")
     df_topk = pd.read_csv(args.topk_csv)
     if "latent_ids_json" in df_topk.columns:
         import json
         df_topk["latent_ids"] = df_topk["latent_ids_json"].apply(json.loads)
     
-    # Load activation batches
     from sae_viewer_comparisons_fixed import SavedActsBatches, collate_saved_batches, load_gen_meta, center_unit_norm
     
     print(f"Loading activation batches from {args.acts_root}...")
@@ -191,12 +185,10 @@ def main():
     gen_meta = load_gen_meta(args.acts_root)
     acts_norm_flag = "yes" if gen_meta.get("normalize", False) else "no"
     
-    # Run ablations
     results = []
     global_count = 0
-    sense_counts = {} # Track count per (lemma, sense)
+    sense_counts = {}
     
-    # Iterate through candidates
     for _, row in df_sense_linked.iterrows():
         if global_count >= args.max_ablations:
             print("Global ablation limit reached.")
@@ -206,15 +198,13 @@ def main():
         sense = row["sense"]
         latent_id = int(row["latent_id"])
         
-        # Check per-sense quota
         key = (lemma, sense)
         current_sense_count = sense_counts.get(key, 0)
         if current_sense_count >= args.max_ablations_per_sense:
-            continue # Skip to next candidate, we have enough for this sense
+            continue
             
         print(f"Processing: {lemma}/{sense} (Latent {latent_id}) [{current_sense_count+1}/{args.max_ablations_per_sense}]")
         
-        # Find matching occurrences in Top-K data
         matches = df_topk[
             (df_topk["lemma"].str.lower() == lemma.lower()) &
             (df_topk["latent_ids"].apply(lambda x: latent_id in x if isinstance(x, list) else False))
@@ -228,13 +218,11 @@ def main():
         batch_idx = int(match_row.get("batch_idx", 0))
         doc_id = match_row.get("doc_id", None)
         
-        # Safety check for file existence
         if batch_idx >= len(saved_ds.files):
             print(f"  Skipping: batch_idx {batch_idx} out of range (max {len(saved_ds.files)})")
             continue
         
         try:
-            # Load batch
             batch_data = torch.load(saved_ds.files[batch_idx], map_location="cpu")
             acts = batch_data.get("hidden_states", batch_data.get("activations"))
             input_ids = batch_data["input_ids"]
@@ -242,12 +230,10 @@ def main():
             
             if acts is None: continue
             
-            # Handle normalization
             if acts_norm_flag == "no":
                 mask_bt = (attention_mask != 0) if attention_mask.dtype != torch.bool else attention_mask
                 acts = center_unit_norm(acts, mask_bt)
             
-            # Compute ΔCE
             delta_ce = compute_delta_ce_ablation(
                 model, tokenizer, sae_state_dict, cfg_in_ckpt,
                 acts, input_ids, attention_mask,
@@ -265,7 +251,6 @@ def main():
                 "model": args.model_id,
             })
             
-            # Update counts
             global_count += 1
             sense_counts[key] = current_sense_count + 1
             
@@ -273,7 +258,6 @@ def main():
             print(f"  Warning: Ablation failed for {lemma}/{sense}: {e}")
             continue
     
-    # Save results
     if results:
         df_results = pd.DataFrame(results)
         df_results.to_csv(args.output, index=False)

@@ -111,7 +111,6 @@ def main() -> None:
         quantile=args.quantile,
     )
     print(f"Calibrated feature scales. Now updating checkpoint...")
-    # Update checkpoint with calibrated buffers
     sae_state = sae.state_dict()
     if isinstance(ckpt, dict):
         if "model" in ckpt and isinstance(ckpt["model"], dict):

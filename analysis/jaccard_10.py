@@ -71,8 +71,8 @@ def main():
     print(f"Rows with valid char offsets: {len(df)}")
 
     print("Loading NER spans by character offset...")
-    ner_exact = {}  
-    ner_by_doc = defaultdict(list)  
+    ner_exact = {}
+    ner_by_doc = defaultdict(list)
     
     with open(args.ner_jsonl) as f:
         for line in f:
