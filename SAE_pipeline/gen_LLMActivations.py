@@ -2,20 +2,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-gen_LLMActivations_fixed.py — Multi-process (1 process/GPU) activation generator with Option A sharding.
-
-This version mirrors the user's original activation logic:
-- Batching/windowing: windows are left-padded to exactly `ctx_len` (like the original collate).
-- Capture path: try forward-hook on the decoder block; if it fails, fall back to `output_hidden_states=True`
-  with index = clamp(layer_index + 1, 0, len(hidden_states)-1).
-- Normalization: optional `--normalize` flag applies *per-token* mean-centering + L2-normalization with eps=1e-8.
-- No zeroing of padded activations (mask is saved for downstream handling).
-- Saves batch files containing: hidden_states [B, T, H], input_ids [B, T], attention_mask [B, T],
-  and per-window metadata (global_row_index, window_index, token_start, token_end).
-
-Sharding: Option-A (modulo of a global permutation) across ranks; outputs under <output_dir>/shard_{rank}/train|val/
-Also writes indices_train.npy / indices_val.npy per shard for verification.
-
 Run example (single node, 4 GPUs):
   torchrun --nproc-per-node=4 gen_LLMActivations_fixed.py \
     --csv_path /path/to/data.csv \
