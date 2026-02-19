@@ -1,13 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-import os
-os.environ.setdefault("TORCH_FSDP_USE_ORIG_PARAMS","1")
-
-sae_train_allinone_v3.py
-- Option A: detect & mask NaN tokens in the train/val loops (no dataset sanitization).
-- Masked aux loss computed outside the model using the same token mask.
-- Preserves your original flags/optimizer/EMA/FSDP semantics and whole-file batching.
+SAE Training Code
 """
 
 import os, re, json, math, time, argparse, random, datetime
