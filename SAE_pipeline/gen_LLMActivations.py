@@ -3,7 +3,7 @@
 # -*- coding: utf-8 -*-
 """
 Run example (single node, 4 GPUs):
-  torchrun --nproc-per-node=4 gen_LLMActivations_fixed.py \
+  torchrun --nproc-per-node=4 gen_LLMActivations.py \
     --csv_path /path/to/data.csv \
     --text_column note_text \
     --model_id meta-llama/Llama-3.1-8B-Instruct \
