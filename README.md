@@ -1,4 +1,7 @@
 # MedSAE: Sparse Autoencoder Analysis Pipeline for Medical Language Models
+<a href="https://doi.org/10.1038/s41746-026-03423-6">
+  <img src="https://img.shields.io/badge/Published%20in-npj%20Digital%20Medicine-006699" alt="Published in npj Digital Medicine">
+</a>
 
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python 3.10+">
@@ -28,6 +31,17 @@
 - [Citation](#citation)
 
 ---
+
+> [!NOTE]
+> **Published in npj Digital Medicine (2026)**
+>
+> [**Understanding clinical reasoning variability in medical large language models: a mechanistic interpretability study**](https://doi.org/10.1038/s41746-026-03423-6)
+>
+> Mirage Modi, Jordan E. Krull, Timothy D. Gauntner, et al.
+>
+> We evaluate clinical reasoning across 3,035 perturbations and use sparse autoencoders to investigate how medical LLMs encode clinical context. Our findings show that interventions improving one model can impair another, supporting model-specific evaluation of clinical reliability.
+>
+> [Read the paper](https://doi.org/10.1038/s41746-026-03423-6) · [Cite this work](#citation)
 
 ## Overview
 
@@ -520,13 +534,13 @@ block (cardiac vs neurological):        19.6% (n=234,67)
 If you use MedSAE in your research, please cite:
 
 ```bibtex
-@article{medsae2026,
-  title={Understanding Clinical Reasoning Variability in Medical Large Language Models: A Mechanistic Interpretability Study},
-  author={Modi, Mirage and Krull, Jordan E. and Johnson, Donte and Wang, Xiaoying and Gauntner, Timothy D. and Li, Mingjia and Cheng, Hao and Ma, Anjun and Zhang, Ping and Stover, Daniel G. and Li, Zihai and Ma, Qin},
-  journal={medRxiv},
-  year={2026},
-  doi={10.64898/2026.01.26.26344845},
-  url={https://www.medrxiv.org/content/10.64898/2026.01.26.26344845v2}
+@article{modi2026medsae,
+  title = {Understanding clinical reasoning variability in medical large language models: a mechanistic interpretability study},
+  author = {Modi, Mirage and Krull, Jordan E. and Gauntner, Timothy D. and Li, Mingjia and Johnson, Donte and Wang, Xiaoying and Cheng, Hao and Zhao, Jing and Ma, Anjun and Zhang, Ping and Stover, Daniel G. and Li, Zihai and Ma, Qin},
+  journal = {npj Digital Medicine},
+  year = {2026},
+  doi = {10.1038/s41746-026-03423-6},
+  url = {https://doi.org/10.1038/s41746-026-03423-6}
 }
 ```
 
